@@ -17,8 +17,7 @@ public enum ProjectFolder {
     OLX_DETAILS("olx_details"),
     ROOT("data"),
     ALL_IDS_FILE("all_ids.json"),
-    META_FILE("meta.json"),
-    ID_FROM_URL("-ID([A-Za-z0-9]+)\\\\.html\"");
+    META_FILE("meta.json");
 
     private final String folderName;
 

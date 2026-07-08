@@ -1,6 +1,5 @@
 
 import controllers.ConsoleWindowController;
-import controllers.OlxController;
 import controllers.UpdateBaseController;
 import materials.Emoji;
 import model.ConsoleWindow;
