@@ -1,177 +1,255 @@
 package model.olx;
 
+import model.City;
+import model.CategoryLocation;
+import model.Currency;
+
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
- * This is a sample listing on OLX  "Це модель оголошення на платформі OLX"
+ * Модель оголошення з платформи OLX.
+ * Відповідає структурі JSON файлу з деталями оголошення.
  */
 public class Announcement {
 
-    // Unique identifier of the ad "Унікальний ідентифікатор оголошення"
-    private Long id;
+    // Унікальний ідентифікатор оголошення (рядковий, напр. "10C65g")
+    private String id;
 
-    // Link to the main photo "Посилання на фотографію"
-    private String urlImage;
+    // Місто де розміщено оголошення
+    private City city;
 
-    // Ad title "Назва оголошення"
+    // Категорія оголошення (напр. "Оренда (довгострокова)", "Продаж")
+    private CategoryLocation category;
+
+    // Посилання на сторінку оголошення
+    private String url;
+
+    // Назва оголошення
     private String title;
 
-    // Ad description "Опис оголошення"
+    // Ціна (рядок бо може бути "450 €", "12 000 грн", "Договірна")
+    private String priceRaw;
+
+    // Ціна як число для порівняння та сортування (може бути null якщо "Договірна")
+    private BigDecimal priceValue;
+
+    // Валюта ціни (UAH, USD, EUR)
+    private String priceCurrency;
+
+    // Місцезнаходження (район, вулиця)
+    private String location;
+
+    // Дата публікації оголошення
+    private String datePublished;
+
+    // Ім'я або нікнейм продавця
+    private String seller;
+
+    // Номер телефону (якщо вдалося витягти з опису)
+    private String phone;
+
+    // Опис оголошення
     private String description;
 
-    // Price of the item/service "Ціна об'єкта оголошення"
-    private BigDecimal price;
+    // Параметри: поверх, площа, кількість кімнат тощо
+    private List<String> params;
 
-    // Name or nickname of the publisher "Автор оголошення"
-    private String author;
+    // Список URL фотографій
+    private List<String> photos;
 
-    // Publication date of the ad "Дата публікації оголошення"
-    private String date;
+    // ── Конструктор ───────────────────────────────────────────────────────────
 
-    // Contact telephone number "Номер телефону для зв'язку"
-    private String numberPhone;
+    public Announcement(String id, String city, String category, String url,
+                           String title, String priceRaw, String location,
+                           String datePublished, String seller, String phone,
+                           String description, List<String> params, List<String> photos) {
+        this.id            = id;
+        this.city          = City.findByRawString(city);
+        this.category      = CategoryLocation.findByRawString(category);
+        this.url           = url;
+        this.title         = title;
+        this.priceRaw      = priceRaw;
+        this.location      = location;
+        this.datePublished = datePublished;
+        this.seller        = seller;
+        this.phone         = phone;
+        this.description   = description;
+        this.params        = params;
+        this.photos        = photos;
 
-    /**
-     * Constructor to create an announcement with all characteristics.
-     * Конструктор для створення оголошення з усіма характеристиками.
-     */
-    public Announcement(Long id, String urlImage, String title, String description, BigDecimal price, String author, String date, String numberPhone) {
+        // Автоматично парсимо ціну при створенні
+        parsePrice(priceRaw);
+    }
+
+    public Announcement(String id, String url, String title, String price, String location,
+                        City city, CategoryLocation category){
         this.id = id;
-        this.urlImage = urlImage;
+        this.url = url;
         this.title = title;
-        this.description = description;
-        this.price = price;
-        this.author = author;
-        this.date = date;
-        this.numberPhone = numberPhone;
+        this.priceRaw = price;
+        this.location = location;
+        this.city = city;
+        this.category = category;
     }
 
 
-    // --- ID Getters and Setters ---
+    // ── Парсинг ціни ──────────────────────────────────────────────────────────
 
     /**
-     * Gets the unique identifier of the ad. / Отримує унікальний ідентифікатор оголошення.
+     * Витягує числове значення і валюту з рядка ціни.
+     * Приклади: "450 €" → 450 / EUR
+     *           "12 000 грн." → 12000 / UAH
+     *           "Договірна" → null / ""
      */
-    public Long getId() {
-        return id;
+    private void parsePrice(String raw) {
+        if (raw == null || raw.isBlank()) return;
+
+        // Визначаємо валюту
+        this.priceCurrency = Currency.parsePrice(raw);
+
+        // Витягуємо числа (прибираємо пробіли між цифрами, крапки, коми)
+        String digits = raw.replaceAll("[^\\d,.]", "")
+                .replaceAll("\\s", "")
+                .replace(",", ".");
+        // Якщо декілька крапок — залишаємо тільки першу
+        int firstDot = digits.indexOf('.');
+        if (firstDot != -1) {
+            digits = digits.substring(0, firstDot + 1)
+                    + digits.substring(firstDot + 1).replace(".", "");
+        }
+
+        try {
+            if (!digits.isEmpty()) this.priceValue = new BigDecimal(digits);
+        } catch (NumberFormatException e) {
+            this.priceValue = null; // "Договірна" або невідомий формат
+        }
     }
 
     /**
-     * Sets the unique identifier of the ad. / Встановлює унікальний ідентифікатор оголошення.
+     * Повертає перше фото або порожній рядок якщо фото немає.
+     * Зручно для відображення обкладинки.
      */
-    public void setId(Long id) {
-        this.id = id;
-    }
-
-    // --- Image URL Getters and Setters ---
-
-    /**
-     * Gets the link to the photo. / Отримує посилання на фотографію.
-     */
-    public String getUrlImage() {
-        return urlImage;
+    public String getMainPhoto() {
+        return (photos != null && !photos.isEmpty()) ? photos.get(0) : "";
     }
 
     /**
-     * Sets the link to the photo. / Встановлює посилання на фотографію.
+     * Повертає кількість кімнат з params або -1 якщо не знайдено.
      */
-    public void setUrlImage(String urlImage) {
-        this.urlImage = urlImage;
-    }
-
-    // --- Description Getters and Setters ---
-
-    /**
-     * Gets the ad description. / Отримує опис оголошення.
-     */
-    public String getDescription() {
-        return description;
-    }
-
-    /**
-     * Sets the ad description. / Встановлює опис оголошення.
-     */
-    public void setDescription(String description) {
-        this.description = description;
-    }
-
-    // --- Title Getters and Setters ---
-
-    /**
-     * Gets the ad title. / Отримує назву оголошення.
-     */
-    public String getTitle() {
-        return title;
+    public int getRoomsCount() {
+        if (params == null) return -1;
+        for (String param : params) {
+            if (param.startsWith("Кількість кімнат:")) {
+                try {
+                    String num = param.replaceAll("[^\\d]", "");
+                    return Integer.parseInt(num);
+                } catch (NumberFormatException e) {
+                    return -1;
+                }
+            }
+        }
+        return -1;
     }
 
     /**
-     * Sets the ad title. / Встановлює назву оголошення.
+     * Повертає загальну площу з params або -1 якщо не знайдено.
      */
-    public void setTitle(String title) {
-        this.title = title;
-    }
-
-    // --- Price Getters and Setters ---
-
-    /**
-     * Gets the price of the item. / Отримує ціну об'єкта.
-     */
-    public BigDecimal getPrice() {
-        return price;
-    }
-
-    /**
-     * Sets the price of the item. / Встановлює ціну об'єкта.
-     */
-    public void setPrice(BigDecimal price) {
-        this.price = price;
-    }
-
-    // --- Author Getters and Setters ---
-
-    /**
-     * Gets the publisher's name. / Отримує ім'я автора оголошення.
-     */
-    public String getAuthor() {
-        return author;
+    public double getTotalArea() {
+        if (params == null) return -1;
+        for (String param : params) {
+            if (param.startsWith("Загальна площа:")) {
+                try {
+                    String num = param.replaceAll("[^\\d.]", "");
+                    return Double.parseDouble(num);
+                } catch (NumberFormatException e) {
+                    return -1;
+                }
+            }
+        }
+        return -1;
     }
 
     /**
-     * Sets the publisher's name. / Встановлює ім'я автора оголошення.
+     * Повертає поверх з params або -1 якщо не знайдено.
      */
-    public void setAuthor(String author) {
-        this.author = author;
+    public int getFloor() {
+        if (params == null) return -1;
+        for (String param : params) {
+            if (param.startsWith("Поверх:")) {
+                try {
+                    String num = param.replaceAll("[^\\d]", "");
+                    return Integer.parseInt(num);
+                } catch (NumberFormatException e) {
+                    return -1;
+                }
+            }
+        }
+        return -1;
     }
 
-    // --- Date Getters and Setters ---
+    // ── Getters and Setters ───────────────────────────────────────────────────
 
-    /**
-     * Gets the publication date. / Отримує дату публікації.
-     */
-    public String getDate() {
-        return date;
+    public String getId()                    { return id; }
+    public void setId(String id)             { this.id = id; }
+
+    public City getCity()                  { return city; }
+    public void setCity(City city)         { this.city = city;}
+
+    public CategoryLocation getCategory()              { return category; }
+    public void setCategory(CategoryLocation category) { this.category = category; }
+
+    public String getUrl()                   { return url; }
+    public void setUrl(String url)           { this.url = url; }
+
+    public String getTitle()                 { return title; }
+    public void setTitle(String title)       { this.title = title; }
+
+    public String getPriceRaw()              { return priceRaw; }
+    public void setPriceRaw(String priceRaw) {
+        this.priceRaw = priceRaw;
+        parsePrice(priceRaw);
     }
 
-    /**
-     * Sets the publication date. / Встановлює дату публікації.
-     */
-    public void setDate(String date) {
-        this.date = date;
-    }
+    public BigDecimal getPriceValue()                    { return priceValue; }
+    public void setPriceValue(BigDecimal priceValue)     { this.priceValue = priceValue; }
 
-    // --- Phone Number Getters and Setters ---
+    public String getPriceCurrency()                     { return priceCurrency; }
+    public void setPriceCurrency(String priceCurrency)   { this.priceCurrency = priceCurrency; }
 
-    /**
-     * Gets the contact phone number. / Отримує номер телефону для зв'язку.
-     */
-    public String getNumberPhone() {
-        return numberPhone;
-    }
+    public String getLocation()                          { return location; }
+    public void setLocation(String location)             { this.location = location; }
 
-    /**
-     * Sets the contact phone number. / Встановлює номер телефону для зв'язку.
-     */
-    public void setNumberPhone(String numberPhone) {
-        this.numberPhone = numberPhone;
+    public String getDatePublished()                     { return datePublished; }
+    public void setDatePublished(String datePublished)   { this.datePublished = datePublished; }
+
+    public String getSeller()                            { return seller; }
+    public void setSeller(String seller)                 { this.seller = seller; }
+
+    public String getPhone()                             { return phone; }
+    public void setPhone(String phone)                   { this.phone = phone; }
+
+    public String getDescription()                       { return description; }
+    public void setDescription(String description)       { this.description = description; }
+
+    public List<String> getParams()                      { return params; }
+    public void setParams(List<String> params)           { this.params = params; }
+
+    public List<String> getPhotos()                      { return photos; }
+    public void setPhotos(List<String> photos)           { this.photos = photos; }
+
+    @Override
+    public String toString() {
+        return "OlxAnnouncement{" +
+                "id='" + id + '\'' +
+                ", city='" + city + '\'' +
+                ", category='" + category + '\'' +
+                ", title='" + title + '\'' +
+                ", price=" + priceRaw +
+                ", rooms=" + getRoomsCount() +
+                ", area=" + getTotalArea() +
+                ", floor=" + getFloor() +
+                ", photos=" + (photos != null ? photos.size() : 0) +
+                '}';
     }
 }

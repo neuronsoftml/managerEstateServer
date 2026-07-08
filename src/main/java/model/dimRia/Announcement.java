@@ -22,6 +22,9 @@ public class Announcement {
     // Price of the item/service "Ціна об'єкта оголошення"
     private BigDecimal price;
 
+    //currency  Валюта.
+    private String currency;
+
     // Name or nickname of the publisher "Автор оголошення"
     private String author;
 
@@ -31,16 +34,18 @@ public class Announcement {
     // Contact telephone number "Номер телефону для зв'язку"
     private String numberPhone;
 
+
     /**
      * Constructor to create an announcement with all characteristics.
      * Конструктор для створення оголошення з усіма характеристиками.
      */
-    public Announcement(Long id, String urlImage, String title, String description, BigDecimal price, String author, String date, String numberPhone) {
+    public Announcement(Long id, String urlImage, String title, String description, BigDecimal price, String currency, String author, String date, String numberPhone) {
         this.id = id;
         this.urlImage = urlImage;
         this.title = title;
         this.description = description;
         this.price = price;
+        this.currency = currency;
         this.author = author;
         this.date = date;
         this.numberPhone = numberPhone;
@@ -125,6 +130,22 @@ public class Announcement {
      */
     public void setPrice(BigDecimal price) {
         this.price = price;
+    }
+
+    // --- currency Getters and Setters ---
+
+    /**
+     * Gets Currency / Отримує тип валюти.
+     */
+    public String getCurrency() {
+        return currency;
+    }
+
+    /**
+     *  ---  Sets the ad Currency. / Встановлює  тип валюти.
+     */
+    public void setCurrency(String currency) {
+        this.currency = currency;
     }
 
     // --- Author Getters and Setters ---

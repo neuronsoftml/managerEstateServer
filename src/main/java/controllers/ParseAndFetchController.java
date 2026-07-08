@@ -3,151 +3,129 @@ package controllers;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import model.dimRia.Announcement;
+import sqlite.DatabaseManager;
 
 
+import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
-public class ParseAndFetchController {
+public  class ParseAndFetchController {
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    public static void start(List<Announcement> announcements) {
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    }
 
     /**
-     * Парсить першу відповідь від /search і дістає звідти масив ідентифікаторів (ID)
+     * ЕТАП 3: Зчитування файлів з папки та парсинг у колекцію об'єктів Announcement
      */
-    public List<Long> parseSearchIds(String jsonResponse) {
-        List<Long> idsList = new ArrayList<>();
+    public static List<Announcement> parseSavedApartments() {
+        System.out.println("\n=== [DimRiaController] Запуск Етапу 3: Парсинг JSON під структуру об'єкта ===");
 
+        List<Announcement> announcementsList = new ArrayList<>();
+        Path detailsFolder = Paths.get("apartment_details");
+
+        if (!Files.exists(detailsFolder)) {
+            System.out.println("Папку 'apartment_details' не знайдено! Спочатку запустіть скачування деталей.");
+            return announcementsList;
+        }
+
+        try (Stream<Path> walk = Files.walk(detailsFolder)) {
+            List<Path> jsonFiles = walk.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().endsWith(".json"))
+                    .toList();
+
+            System.out.println("Знайдено " + jsonFiles.size() + " файлів для парсингу.");
+
+            for (Path file : jsonFiles) {
+                try {
+                    JsonNode root = OBJECT_MAPPER.readTree(file.toFile());
+
+                    Long id = root.has("realty_id") ? root.get("realty_id").asLong() : null;
+                    if (id == null) {
+                        System.out.println("-> Пропущено файл " + file.getFileName() + ", бо відсутній realty_id");
+                        continue;
+                    }
+
+                    String type = root.has("realty_type_name_uk") ? root.get("realty_type_name_uk").asText() : "Нерухомість";
+                    int rooms = root.has("rooms_count") ? root.get("rooms_count").asInt() : 0;
+                    String street = root.has("street_name_uk") ? root.get("street_name_uk").asText() : "";
+                    String title = type + (rooms > 0 ? ", " + rooms + " кімн." : "") + (!street.isEmpty() ? ", " + street : "");
+
+                    String description = root.has("description_uk") ? root.get("description_uk").asText() : "Опис відсутній";
+
+                    String urlImage = "Немає фото";
+                    if (root.has("main_photo") && !root.get("main_photo").asText().isEmpty()) {
+                        urlImage = "https://cdn.riastatic.com/photosnewr/" + root.get("main_photo").asText();
+                    }
+
+                    BigDecimal price = BigDecimal.ZERO;
+                    String currency =  root.has("currency_type_uk") ? root.get("currency_type_uk").asText() : "Не вказано";
+
+                    if (root.has("price")) {
+                        price = new BigDecimal(root.get("price").asText());
+                    }
+
+                    String author = "Приватна особа";
+                    if (root.has("agency") && root.get("agency").has("name")) {
+                        author = root.get("agency").get("name").asText();
+                    } else if (root.has("user_newbuild_name_uk")) {
+                        author = root.get("user_newbuild_name_uk").asText();
+                    }
+
+                    String date = root.has("created_at") ? root.get("created_at").asText() : "Не вказано";
+                    String numberPhone = "Контакт через " + author;
+
+                    Announcement announcement = new Announcement(id, urlImage, title, description, price, currency, author, date, numberPhone);
+                    announcementsList.add(announcement);
+
+                } catch (IOException e) {
+                    System.err.println("Помилка розбору файлу " + file.getFileName() + ": " + e.getMessage());
+                }
+            }
+
+        } catch (IOException e) {
+            System.err.println("Помилка читання папки: " + e.getMessage());
+        }
+
+        System.out.println("Успішно запарсено " + announcementsList.size() + " об'єктів у колекцію!");
+        return announcementsList;
+    }
+
+
+    /**
+     * Зчитує JSON-файл із диска, знаходить у ньому масив ідентифікаторів та
+     * трансформує його у список об'єктів Long.
+     * <p>
+     * Метод очікує, що JSON-структура містить кореневий вузол "items",
+     * який є масивом числових значень (ID оголошень DimRia). У разі помилки
+     * зчитування або невірного формату файлу, метод не перериває виконання
+     * програми, а логує помилку в консоль і повертає порожній список.
+     * </p>
+     *
+     * @param filePath шлях до цільового файлу (.json), який необхідно розпарсити
+     * @return {@link List} об'єктів {@link Long}, що містить усі знайдені ID;
+     * або порожній список, якщо вузол "items" відсутній, не є масивом, або виникла помилка зчитування.
+     */
+    public static List<Long> extractIdsFromJson(Path filePath) {
+        List<Long> idList = new ArrayList<>();
         try {
-            JsonNode rootNode = objectMapper.readTree(jsonResponse);
+            JsonNode rootNode = OBJECT_MAPPER.readTree(filePath.toFile());
             JsonNode itemsNode = rootNode.get("items");
 
             if (itemsNode != null && itemsNode.isArray()) {
                 for (JsonNode idNode : itemsNode) {
-                    idsList.add(idNode.asLong());
+                    idList.add(idNode.asLong());
                 }
             }
-        } catch (Exception e) {
-            System.err.println("Помилка парсингу JSON пошуку: " + e.getMessage());
+        } catch (IOException e) {
+            System.err.println("Не вдалося розпарсити файл " + filePath.getFileName() + ": " + e.getMessage());
         }
-
-        return idsList;
-    }
-
-    /**
-     * Парсить JSON детальної інформації від /info/{id} і створює об'єкт Announcement.
-     * Враховує реальну динамічну структуру характеристик та цін DIM.RIA.
-     */
-    public Announcement parseSingleAnnouncement(Long id, String jsonDetailResponse) {
-        try {
-            JsonNode root = objectMapper.readTree(jsonDetailResponse);
-
-            // 1. Назва оголошення (DIM.RIA часто віддає сформований тайтл у "title" або "user_title")
-            String title = root.has("title") ? root.path("title").asText() : root.path("user_title").asText("Нерухомість");
-
-            // 2. Опис оголошення (зазвичай в "description" або "text")
-            String description = root.has("description") ? root.path("description").asText() : root.path("text").asText("Опис відсутній");
-
-            // 3. Ціна (price)
-            // В DIM.RIA ціна зазвичай лежить в об'єкті "price_details" або прямо в "price_usd" / "price"
-            // Пріоритет віддаємо доларовому еквіваленту або базовому полю price
-            double priceValue = 0.0;
-            if (root.has("price_usd")) {
-                priceValue = root.path("price_usd").asDouble();
-            } else if (root.has("price")) {
-                priceValue = root.path("price").asDouble();
-            }
-            BigDecimal price = BigDecimal.valueOf(priceValue);
-
-            // 4. Автор оголошення
-            String author = root.path("user_name").asText("Приватна особа");
-
-            // 5. Дата публікації (DIM.RIA часто віддає "created_at" або "publish_date")
-            String date = root.has("publish_date") ? root.path("publish_date").asText() : root.path("created_at").asText("Не вказано");
-
-            // 6. Номер телефону
-            // Телефони часто лежать або в "user_phone", або масивом у "beautiful_phones" / "phones"
-            String numberPhone = "Не вказано";
-            if (root.has("user_phone")) {
-                numberPhone = root.path("user_phone").asText();
-            } else if (root.path("phones").isArray() && root.path("phones").size() > 0) {
-                numberPhone = root.path("phones").get(0).path("number").asText("Не вказано");
-            }
-
-            // 7. Посилання на головну фотографію
-            String urlImage = "Фото відсутнє";
-            JsonNode photosNode = root.path("photos");
-            if (photosNode.isObject() && photosNode.size() > 0) {
-                // Іноді фото приходять об'єктом, де ключі - це ID фото
-                JsonNode firstPhoto = photosNode.elements().next();
-                urlImage = extractPhotoUrl(firstPhoto);
-            } else if (photosNode.isArray() && photosNode.size() > 0) {
-                // Або класичним масивом
-                urlImage = extractPhotoUrl(photosNode.get(0));
-            }
-
-            // 8. ДИНАМІЧНІ ХАРАКТЕРИСТИКИ (Збагачуємо опис або назву на основі конфігу)
-            // В DIM.RIA характеристики об'єкта лежать у вузлі "characteristics" або "features"
-            // Вони приходять як масив об'єктів з id, де id відповідає characteristic_id з твого конфігу
-            JsonNode characteristics = root.path("characteristics");
-            if (characteristics.isArray()) {
-                int rooms = 0;
-                double square = 0.0;
-
-                for (JsonNode charNode : characteristics) {
-                    int charId = charNode.path("characteristic_id").asInt();
-
-                    // Звіряємося з ID з твого конфігу:
-                    switch (charId) {
-                        case 442: // Кількість кімнат (characteristic_id: 442 у твоєму файлі)
-                            rooms = charNode.path("value").asInt();
-                            break;
-                        case 440: // Загальна площа (characteristic_id: 440)
-                            square = charNode.path("value").asDouble();
-                            break;
-                        // Тут за потреби можна витягнути стіни (1434), рік побудови (443) тощо
-                    }
-                }
-
-                // Якщо вдалося розпарсити кімнати та площу, красиво допишемо їх на початок опису або тайтлу
-                if (rooms > 0 || square > 0) {
-                    String metaDetails = String.format("[%d-кімн., площа: %.1f м²] ", rooms, square);
-                    description = metaDetails + description;
-
-                    // Якщо дефолтний тайтл надто сухий, додамо конкретики
-                    if (title.equals("Нерухомість") || title.contains("Квартира")) {
-                        title = String.format("%d-кімнатна квартира, %.1f м²", rooms, square);
-                    }
-                }
-            }
-
-            return new Announcement(id, urlImage, title, description, price, author, date, numberPhone);
-
-        } catch (Exception e) {
-            System.err.println("Помилка під час парсингу деталей оголошення ID " + id + ": " + e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Допоміжний метод для витягування правильного URL фотографії
-     */
-    private String extractPhotoUrl(JsonNode photoNode) {
-        if (photoNode == null) return "Фото відсутнє";
-
-        // В DIM.RIA у фото зазвичай є шаблони імен або рівні якості: "file", "main", "secure"
-        if (photoNode.has("file")) {
-            return photoNode.path("file").asText();
-        } else if (photoNode.has("main")) {
-            return photoNode.path("main").asText();
-        }
-
-        // Якщо прийшов просто рядок (URL)
-        if (photoNode.isTextual()) {
-            return photoNode.asText();
-        }
-
-        return "Фото відсутнє";
+        return idList;
     }
 }
