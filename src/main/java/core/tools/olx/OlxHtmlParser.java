@@ -2,8 +2,7 @@ package core.tools.olx;
 
 import model.City;
 import model.CategoryLocation;
-import model.ProjectFolder;
-import model.olx.Announcement;
+import model.Announcement;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;

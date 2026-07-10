@@ -1,24 +1,29 @@
-package core.tools.olx;
+package core.tools.dimRia;
 
-import model.ProjectFolder;
 import model.Announcement;
-import java.io.*;
+import model.ProjectFolder;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.*;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class OlxStorageService {
+public class DimRiaStorageService {
     private static final String ROOT         = ProjectFolder.ROOT.getName();
     private static final String OUTPUT       = ProjectFolder.OUTPUT_DIR.getName();
-    private static final String POSTS_DIR    = ROOT + "/" + OUTPUT + "/" + ProjectFolder.OLX_DETAILS.getName();
-    private static final String IDS_DIR      = ROOT + "/" + OUTPUT + "/" + ProjectFolder.OLX_IDS.getName();
-    private static final String ALL_IDS_FILE = IDS_DIR + "/" + ProjectFolder.ALL_IDS_FILE.getName();
-    private static final String META_FILE    = IDS_DIR + "/" + ProjectFolder.META_FILE.getName();
+    private static final String POSTS_DIR    = ROOT + "/" + OUTPUT + "/dimria_details";
+    private static final String IDS_DIR      = ROOT + "/" + OUTPUT + "/dimria_ids";
+    private static final String ALL_IDS_FILE = IDS_DIR + "/all_ids.json";
+    private static final String META_FILE    = IDS_DIR + "/meta.json";
     private static final DateTimeFormatter DT  = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
     public static void initDirectories() throws IOException {
@@ -28,6 +33,10 @@ public class OlxStorageService {
 
     public static String getRootAbsolutePath() {
         return new File(ROOT).getAbsolutePath();
+    }
+
+    public static String getPostsDir() {
+        return POSTS_DIR;
     }
 
     public static boolean isUpdateNeeded(long hours, PrintStream log) {
@@ -40,11 +49,11 @@ public class OlxStorageService {
 
             LocalDateTime lastUpdate = LocalDateTime.parse(m.group(1), DT);
             if (lastUpdate.isAfter(LocalDateTime.now().minusHours(hours))) {
-                log.printf("⏱ Останнє оновлення: %s%n", lastUpdate.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")));
+                log.printf("⏱ Останнє оновлення DimRia: %s%n", lastUpdate.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")));
                 return false;
             }
         } catch (Exception e) {
-            log.println("⚠️ Не вдалося прочитати meta.json: " + e.getMessage());
+            log.println("⚠️ Не вдалося прочитати meta.json для DimRia: " + e.getMessage());
         }
         return true;
     }
@@ -63,9 +72,14 @@ public class OlxStorageService {
             Matcher m = Pattern.compile("\"id\"\\s*:\\s*\"([^\"]+)\"").matcher(content);
             while (m.find()) ids.add(m.group(1));
         } catch (IOException e) {
-            log.println("⚠️ Помилка читання all_ids.json: " + e.getMessage());
+            log.println("⚠️ Помилка читання all_ids.json DimRia: " + e.getMessage());
         }
         return ids;
+    }
+
+    public static void saveAdDetailJson(String id, String jsonState) throws IOException {
+        String filePath = POSTS_DIR + "/post_" + id + ".json";
+        Files.writeString(Paths.get(filePath), jsonState, StandardCharsets.UTF_8);
     }
 
     public static void appendNewIds(List<Announcement> newAds, int existingCount) throws IOException {
@@ -105,7 +119,7 @@ public class OlxStorageService {
         Files.writeString(file.toPath(), result, StandardCharsets.UTF_8);
     }
 
-    public static void saveAllIds(List<Announcement> ads) throws IOException {
+    private static void saveAllIds(List<Announcement> ads) throws IOException {
         StringBuilder sb = new StringBuilder("{\n  \"total\": " + ads.size() + ",\n  \"generated_at\": \"" + LocalDateTime.now() + "\",\n  \"ads\": [\n");
         for (int i = 0; i < ads.size(); i++) {
             Announcement a = ads.get(i);
@@ -121,32 +135,6 @@ public class OlxStorageService {
         }
         sb.append("  ]\n}");
         Files.writeString(Paths.get(ALL_IDS_FILE), sb.toString(), StandardCharsets.UTF_8);
-    }
-
-    public static void saveAdDetail(Announcement d) throws IOException {
-        String filePath = POSTS_DIR + "/post_" + d.getId().replaceAll("[^a-zA-Z0-9_\\-]", "_") + ".json";
-        StringBuilder sb = new StringBuilder("{\n");
-        sb.append("  \"id\": \"").append(esc(d.getId())).append("\",\n")
-                .append("  \"city\": \"").append(esc(d.getCity() != null ? d.getCity().getLabel() : "")).append("\",\n")
-                .append("  \"category\": \"").append(esc(d.getCategory() != null ? d.getCategory().getLabel() : "")).append("\",\n")
-                .append("  \"url\": \"").append(esc(d.getUrl())).append("\",\n")
-                .append("  \"title\": \"").append(esc(d.getTitle())).append("\",\n")
-                .append("  \"price\": \"").append(esc(d.getPriceRaw())).append("\",\n")
-                .append("  \"location\": \"").append(esc(d.getLocation())).append("\",\n")
-                .append("  \"date_published\": \"").append(esc(d.getDatePublished())).append("\",\n")
-                .append("  \"seller\": \"").append(esc(d.getSeller())).append("\",\n")
-                .append("  \"description\": \"").append(esc(d.getDescription())).append("\",\n")
-                .append("  \"params\": [");
-
-        for (int i = 0; i < d.getParams().size(); i++) {
-            sb.append("\n    \"").append(esc(d.getParams().get(i))).append("\"").append(i < d.getParams().size() - 1 ? "," : "");
-        }
-        sb.append("\n  ],\n  \"photos\": [");
-        for (int i = 0; i < d.getPhotos().size(); i++) {
-            sb.append("\n    \"").append(esc(d.getPhotos().get(i))).append("\"").append(i < d.getPhotos().size() - 1 ? "," : "");
-        }
-        sb.append("\n  ]\n}");
-        Files.writeString(Paths.get(filePath), sb.toString(), StandardCharsets.UTF_8);
     }
 
     private static String esc(String s) {

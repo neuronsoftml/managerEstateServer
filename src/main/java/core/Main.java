@@ -1,12 +1,14 @@
 
 import controllers.ConsoleWindowController;
 import controllers.UpdateBaseController;
+import controllers.telegram.TelegramController;
 import materials.Emoji;
 import model.ConsoleWindow;
 import sqlite.DatabaseManager;
 
 private static UpdateBaseController updateBaseController;
 private static ConsoleWindowController consoleWindowController;
+private static  TelegramController telegramController;
 
 
 void main(String[] args) {
@@ -21,6 +23,7 @@ void main(String[] args) {
 private static void initControllers(){
     updateBaseController = new UpdateBaseController();
     consoleWindowController = new ConsoleWindowController();
+    telegramController = new TelegramController();
 }
 
 /**
@@ -29,15 +32,17 @@ private static void initControllers(){
 private static void startCoreServerFunctionality(){
     consoleWindowController.start();
     startMainScheduler(consoleWindowController.getMainConsole());
+    telegramController.start(consoleWindowController.getTelegramBotConsole());
     updateDataBse();
 }
 
 /**
- * Цей метод відповідає за оновлення бази даних, кожних 24 годин старт з 00 годин :00 хвилин.
+ * Цей метод відповідає за оновлення бази даних, кожних 3 годин старт з 00 годин :00 хвилин.
  */
 private static void updateDataBse(){
     updateBaseController.startDailyTask(
-            consoleWindowController.getOlxConsole()
+            consoleWindowController.getOlxConsole(),
+            consoleWindowController.getDimRiaConsole()
     );
 }
 

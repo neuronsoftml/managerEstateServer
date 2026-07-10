@@ -1,10 +1,7 @@
-package model.olx;
+package model;
 
 import core.tools.olx.AnnouncementParamParser;
 import core.tools.olx.ParserPrice;
-import model.City;
-import model.CategoryLocation;
-import model.Currency;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -61,7 +58,6 @@ public class Announcement {
         this.url = url;
         this.title = title;
         this.priceRaw = priceRaw;
-        this.location = location;
         this.city = city;
         this.category = category;
         updatePriceFields(priceRaw);

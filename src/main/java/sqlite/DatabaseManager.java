@@ -1,106 +1,106 @@
 package sqlite;
 
-import model.dimRia.Announcement;
+import java.sql.SQLException;
 
-import java.sql.*;
-import java.util.List;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.sql.Statement;
 
+/**
+ * Менеджер підключення до бази даних SQLite.
+ * Реалізує патерн Singleton — одне підключення на всю програму.
+ */
 public class DatabaseManager {
 
-    private static final String DB_URL = "jdbc:sqlite:apartments_base.db";
+    // Шлях до файлу бази даних
+    private static final String DB_PATH = "data/database.db";
+    private static final String DB_URL  = "jdbc:sqlite:" + DB_PATH;
 
-    // Винесли SQL-запит створення таблиці в окрему константу для зручності
-    private static final String CREATE_TABLE_SQL = "CREATE TABLE IF NOT EXISTS dimria_apartments (" +
-            "realty_id INTEGER PRIMARY KEY," +
-            "title TEXT," +
-            "description TEXT," +
-            "price REAL," +
-            "currency TEXT," +
-            "author TEXT," +
-            "date_published TEXT," +
-            "phone_number TEXT," +
-            "url_image TEXT," +
-            "created_at TEXT DEFAULT CURRENT_TIMESTAMP" +
-            ");";
+    // Єдине підключення (Singleton)
+    private static Connection connection;
+
+    // ── Приватний конструктор — клас не можна інстанціювати ──────────────────
+    private DatabaseManager() {}
+
+    // ── Отримати підключення ──────────────────────────────────────────────────
 
     /**
-     * Ініціалізація бази даних
+     * Повертає єдине підключення до БД.
+     * Якщо підключення ще немає або воно закрите — створює нове.
+     */
+    public static synchronized Connection getConnection() {
+        try {
+            if (connection == null || connection.isClosed()) {
+                connection = DriverManager.getConnection(DB_URL);
+                // Вмикаємо підтримку зовнішніх ключів (FOREIGN KEY)
+                try (Statement stmt = connection.createStatement()) {
+                    stmt.execute("PRAGMA foreign_keys = ON");
+                    stmt.execute("PRAGMA journal_mode = WAL"); // краща продуктивність при записі
+                }
+            }
+            return connection;
+        } catch (SQLException e) {
+            throw new RuntimeException("❌ Не вдалося підключитися до БД: " + e.getMessage(), e);
+        }
+    }
+
+    // ── Ініціалізація БД ──────────────────────────────────────────────────────
+
+    /**
+     * Викликається один раз при старті програми (з Main.java).
+     * Створює файл БД якщо не існує та ініціалізує всі таблиці.
      */
     public static void initializeDatabase() {
-        try (Connection conn = DriverManager.getConnection(DB_URL);
-             Statement stmt = conn.createStatement()) {
+        try {
+            // Завантажуємо драйвер SQLite
+            Class.forName("org.sqlite.JDBC");
 
-            stmt.execute(CREATE_TABLE_SQL);
-            System.out.println("[SQLite] База даних та таблиця успішно перевірені.");
+            // Створюємо директорію data/ якщо не існує
+            java.nio.file.Files.createDirectories(
+                    java.nio.file.Paths.get("data"));
 
-        } catch (SQLException e) {
-            System.err.println("[SQLite] Помилка ініціалізації бази: " + e.getMessage());
+            // Встановлюємо підключення (файл БД створюється автоматично)
+            getConnection();
+
+            // Ініціалізуємо таблиці всіх сервісів
+            ProjectDatabaseService.initTables();
+
+            System.out.println("✅ [SQLite] База даних та таблиці успішно перевірені.");
+            System.out.println("📁 [SQLite] Файл БД: " +
+                    new java.io.File(DB_PATH).getAbsolutePath());
+
+        } catch (ClassNotFoundException e) {
+            throw new RuntimeException(
+                    "❌ SQLite драйвер не знайдено. Додай залежність у pom.xml:\n" +
+                            "<dependency>\n" +
+                            "  <groupId>org.xerial</groupId>\n" +
+                            "  <artifactId>sqlite-jdbc</artifactId>\n" +
+                            "  <version>3.45.3.0</version>\n" +
+                            "</dependency>", e);
+        } catch (Exception e) {
+            throw new RuntimeException("❌ Помилка ініціалізації БД: " + e.getMessage(), e);
         }
     }
+
+    // ── Закрити підключення ───────────────────────────────────────────────────
 
     /**
-     * Пакетне збереження квартир із автоматичним захистом від відсутності таблиці
+     * Закриває підключення до БД.
+     * Викликати при завершенні програми (ShutdownHook).
      */
-    public static void saveApartments(List<Announcement> apartments) {
-        String insertSQL = "INSERT OR IGNORE INTO dimria_apartments " +
-                "(realty_id, title, description, price, currency, author, date_published, phone_number, url_image) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?,?)";
-
-        try (Connection conn = DriverManager.getConnection(DB_URL)) {
-
-            // ГАРАНТІЯ: Перед будь-яким записом ще раз переконуємося, що таблиця існує
-            try (Statement stmt = conn.createStatement()) {
-                stmt.execute(CREATE_TABLE_SQL);
-            }
-
-            // Переходимо до пакетного запису
-            try (PreparedStatement pstmt = conn.prepareStatement(insertSQL)) {
-                conn.setAutoCommit(false); // Вимикаємо авто-комміт для швидкості
-
-                for (Announcement a : apartments) {
-                    pstmt.setLong(1, a.getId());
-                    pstmt.setString(2, a.getTitle());
-                    pstmt.setString(3, a.getDescription());
-                    pstmt.setDouble(4, a.getPrice().doubleValue());
-                    pstmt.setString(5, a.getCurrency());
-                    pstmt.setString(6, a.getAuthor());
-                    pstmt.setString(7, a.getDate());
-                    pstmt.setString(8, a.getNumberPhone());
-                    pstmt.setString(9, a.getUrlImage());
-
-                    pstmt.addBatch();
+    public static synchronized void closeConnection() {
+        if (connection != null) {
+            try {
+                if (!connection.isClosed()) {
+                    connection.close();
+                    System.out.println("🔒 [SQLite] Підключення закрито.");
                 }
-
-                int[] results = pstmt.executeBatch();
-                conn.commit(); // Фіксуємо транзакцію на диску
-
-                int addedNew = 0;
-                for (int res : results) {
-                    if (res > 0 || res == Statement.SUCCESS_NO_INFO) {
-                        addedNew++;
-                    }
-                }
-
-                System.out.println("[SQLite] Пакетний запис завершено. Додано нових квартир у базу: " + addedNew);
+            } catch (SQLException e) {
+                System.err.println("⚠️ Помилка закриття підключення: " + e.getMessage());
+            } finally {
+                connection = null;
             }
-
-        } catch (SQLException e) {
-            System.err.println("[SQLite] Помилка пакетного запису: " + e.getMessage());
         }
-    }
-
-
-    public static void entryUpdatedDatabase(List<Announcement> announcements) {
-        // Крок 3: Записуємо отримані дані в SQLite
-        if (!announcements.isEmpty()) {
-            System.out.println("\n[core.Main] Знайдено об'єкти для імпорту. Запуск запису в базу...");
-            DatabaseManager.saveApartments(announcements);
-        } else {
-            System.out.println("\n[core.Main] Папка з деталями порожня або файли не знайдені. Нічого записувати.");
-        }
-
-        System.out.println("\n=== РОБОТУ ЗАВЕРШЕНО ===");
     }
 }
-
-

@@ -11,6 +11,7 @@ public class ConsoleWindowController {
     private ConsoleWindow mainConsole;
     private ConsoleWindow olxConsole;
     private ConsoleWindow dimRiaConsole;
+    private ConsoleWindow telegramBotConsole;
 
 
     public void start() {
@@ -19,7 +20,8 @@ public class ConsoleWindowController {
             SwingUtilities.invokeAndWait(() -> {
                 createWindowMainLog();
                 createWindowOlxLog();
-                createWindowDimLog();
+                //createWindowDimLog();
+                createWindowTelegramBotLog();
             });
         } catch (Exception e) {
             throw new RuntimeException("Не вдалося створити вікна консолей", e);
@@ -33,7 +35,7 @@ public class ConsoleWindowController {
     }
 
     public  void createWindowDimLog(){
-        dimRiaConsole  = new ConsoleWindow("🔵 DimRia Controller",      new Color(20, 20, 40));
+        dimRiaConsole  = new ConsoleWindow(" DimRia Controller",      new Color(20, 20, 40));
         dimRiaConsole.setLocation(420, 580);
 
     }
@@ -43,10 +45,18 @@ public class ConsoleWindowController {
         mainConsole .setLocation(0,   50);
     }
 
+    public  void createWindowTelegramBotLog(){
+        telegramBotConsole = new ConsoleWindow("🔵 Telegram Controller",      new Color(20, 20, 40));
+        telegramBotConsole.setLocation(420, 580);
+
+    }
+
     public ConsoleWindow getOlxConsole() {return olxConsole;}
 
     public ConsoleWindow getDimRiaConsole() {return dimRiaConsole;}
 
     public ConsoleWindow getMainConsole() {return mainConsole;}
+
+    public ConsoleWindow getTelegramBotConsole() {return telegramBotConsole;}
 
 }

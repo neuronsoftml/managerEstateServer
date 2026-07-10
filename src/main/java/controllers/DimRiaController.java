@@ -1,236 +1,194 @@
 package controllers;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import model.ProjectFolder;
-import model.dimRia.Announcement;
+import core.tools.dimRia.DimRiaHtmlParser;
+import core.tools.dimRia.DimRiaStorageService;
+import core.tools.olx.OlxHtmlParser;
+import model.CategoryLocation;
+import model.City;
+import model.Announcement;
+import org.jsoup.nodes.Document;
 
-import java.io.IOException;
-import java.math.BigDecimal;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-import java.util.stream.Stream;
+
+import java.io.PrintStream;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class DimRiaController {
 
-    //8TjEB8XOphWtyXTNzJ4aO0aKoymu4xVbU4Y9Ps6e
-    //PB4dhkYRNhmWG1XQjvx0vFBHTEVe58fn3b7RYL6D
+    private static final int DELAY_PAGES = 2000;
+    private static final int DELAY_POSTS = 2500;
 
-    private final String SEARCH_URL = "https://developers.ria.com/dom/search";
-    private final String INFO_URL = "https://developers.ria.com/dom/info/";
-    private static final String API_KEY = "8TjEB8XOphWtyXTNzJ4aO0aKoymu4xVbU4Y9Ps6e";
-    private static final int DELAY_MS = 3000;
-    private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
-
-    // Ваш пул безкоштовних ключів (сюди пропишіть усі 30 штук через кому)
-    private static final String[] API_KEYS = {
-            "PB4dhkYRNhmWG1XQjvx0vFBHTEVe58fn3b7RYL6D",
-            "8TjEB8XOphWtyXTNzJ4aO0aKoymu4xVbU4Y9Ps6e",
-            "ki3TyF6aMw5qyFkPzPGarJsoKlpt9bdHafbnJ4wW",
-            // ... додайте решту ключів сюди
+    private static final City[] ACTIVE_CITIES = {
+            City.CHERNIVTSI, City.GODILIV, City.KOROVIA, City.CHAGOR
     };
 
-    // Індекс ключа, який використовується в даний момент
-    private static int currentKeyIndex = 0;
+    private static final CategoryLocation[] ACTIVE_CATEGORIES = { CategoryLocation.RENT_LONG, CategoryLocation.SALE };
+    private static PrintStream log;
 
-    // Метод для швидкого отримання поточного ключа
-    private static String getActiveKey() {
-        return API_KEYS[currentKeyIndex];
-    }
-
-    // Метод для перемикання на наступний ключ, якщо зловили 429
-    private static void switchToNextKey() {
-        currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-        System.out.println("!!! [Система Ротації] Ключ вичерпано. Перемикаємося на ключ №" + (currentKeyIndex + 1));
-    }
-
-    /**
-     * ЕТАП 1: Посторінкове викачування списків ID (Продаж та Оренда)
-     */
-    public static void fetchAllChernivtsiApartments() {
-        // Передаємо назву папки з Enum
-        String targetFolder = ProjectFolder.ID_LISTS.getName();
-
-        System.out.println("=== [DimRiaController] Запуск парсингу списків: ПРОДАЖ ===");
-        downloadPagesByOperation(1, "prodazh", targetFolder);
-
-        System.out.println("\n=== [DimRiaController] Запуск парсингу списків: ОРЕНДА ===");
-        downloadPagesByOperation(3, "orenda", targetFolder);
-    }
-
-    /**
-     * ЕТАП 2: Поштучне завантаження деталей з гарантованою паузою.
-     * Зчитує раніше завантажені ID з папки "apartament_id" та завантажує детальну інформацію
-     * про кожну квартиру в папку "apartament_details".
-     */
-    public static void fetchDetailsForCollectedIds() {
-        System.out.println("\n=== [DimRiaController] Запуск Етапу 2 ===");
-
-        // Використовуємо Енум для папки призначення ("apartment_details")
-        Path outputFolder = ProjectFolder.DETAILS.getPath();
-        String folderName = ProjectFolder.DETAILS.getName();
-
+    public static void start(PrintStream printStream) {
+        log = printStream;
         try {
-            if (!Files.exists(outputFolder)) {
-                Files.createDirectory(outputFolder);
-            }
-        } catch (IOException e) {
-            System.err.println("Не вдалося створити папку: " + e.getMessage());
-            return;
-        }
+            DimRiaStorageService.initDirectories();
+            log.println("📁 Робоча директорія DimRia: " + DimRiaStorageService.getRootAbsolutePath());
 
-        List<Long> allIds = new ArrayList<>();
-        // Використовуємо Енум для вхідної папки ("apartment_id")
-        Path inputFolder = ProjectFolder.ID_LISTS.getPath();
-
-        if (!Files.exists(inputFolder)) {
-            System.err.println("Помилка: Папка [" + inputFolder + "] не існує.");
-            return;
-        }
-
-        try (Stream<Path> walk = Files.walk(inputFolder)) {
-            walk.filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().startsWith("перший 100 запит_") && p.getFileName().toString().endsWith(".json"))
-                    .forEach(file -> allIds.addAll(ParseAndFetchController.extractIdsFromJson(file)));
-        } catch (IOException e) {
-            System.err.println("Помилка читання списків ID: " + e.getMessage());
-            return;
-        }
-
-        System.out.println("Всього знайдено унікальних ID для обробки: " + allIds.size());
-
-        // Проходимо по кожному отриманому ID та робимо запити до API
-        for (int i = 0; i < allIds.size(); i++) {
-            Long id = allIds.get(i);
-            String targetFileName = folderName + "/apartment_id_" + id + ".json";
-            Path targetFilePath = Paths.get(targetFileName);
-
-            // Якщо файл цієї квартири вже викачаний раніше — пропускаємо
-            if (Files.exists(targetFilePath)) {
-                System.out.println((i + 1) + "/" + allIds.size() + ") Квартира ID " + id + " вже є локально, пропускаємо.");
-                continue;
-            }
-
-            // Динамічно підставляємо АКТИВНИЙ ключ через getActiveKey()
-            String url = "https://developers.ria.com/dom/info/" + id + "?api_key=" + getActiveKey();
-            HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).GET().build();
-
-            try {
-                System.out.println((i + 1) + "/" + allIds.size() + ") Запит деталей для ID " + id + " за допомогою ключа №" + (currentKeyIndex + 1) + "...");
-                HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
-
-                if (response.statusCode() == 200) {
-                    Files.writeString(targetFilePath, response.body());
-                    System.out.println("-> Успішно збережено: " + targetFilePath.getFileName());
-
-                    // Пауза 200 мілісекунд (0.2 секунди) для швидкого викачування з пулом ключів
-                    Thread.sleep(200);
-
-                } else if (response.statusCode() == 429) {
-                    System.err.println("!!! Ключ №" + (currentKeyIndex + 1) + " зловив ліміт 429!");
-
-                    // Змінюємо ключ на наступний
-                    switchToNextKey();
-
-                    // Повертаємо індекс назад, щоб повторити запит цього ж ID з новим ключем
-                    i--;
-
-                    // Пауза для стабілізації перед новим запитом
-                    Thread.sleep(1000);
-
-                } else {
-                    System.err.println("Помилка сервера для ID " + id + ". Код відповіді: " + response.statusCode());
-                }
-
-            } catch (IOException e) {
-                System.err.println("Помилка мережі для ID " + id + ": " + e.getMessage());
-            } catch (InterruptedException e) {
-                System.err.println("Процес перервано.");
-                Thread.currentThread().interrupt();
+            if (!DimRiaStorageService.isUpdateNeeded(6, log)) {
+                log.println("⏳ База DimRia оновлювалась менше 6 годин тому. Пропускаємо.");
                 return;
             }
+
+            log.println("\n=== [DimRia API] ЕТАП 1: Збір ID оголошень ===");
+            Set<String> existingIds = DimRiaStorageService.loadExistingIds(log);
+            log.printf("📂 Вже відстежується ID: %d%n", existingIds.size());
+
+            Map<String, Announcement> freshAdsMap = new LinkedHashMap<>();
+
+            for (City city : ACTIVE_CITIES) {
+                for (CategoryLocation category : ACTIVE_CATEGORIES) {
+
+                    log.printf("%n  🔍 %s → %s [DimRia]%n", city.getLabel(), category.getLabel());
+                    try {
+                        List<Announcement> pageAds = collectAllPages(city, category);
+                        int before = freshAdsMap.size();
+                        for (Announcement ad : pageAds) freshAdsMap.putIfAbsent(ad.getId(), ad);
+
+                        log.printf("  📊 Знайдено: %d | Нових у сесії: %d | Дублів сесії: %d%n",
+                                pageAds.size(), (freshAdsMap.size() - before), pageAds.size() - (freshAdsMap.size() - before));
+                    } catch (org.jsoup.HttpStatusException e) {
+                        log.printf("  ⚠️ Пропущено %s/%s — HTTP %d%n", city.getLabel(), category.getLabel(), e.getStatusCode());
+                    } catch (Exception e) {
+                        log.printf("  ❌ Помилка збору %s/%s: %s%n", city.getLabel(), category.getLabel(), e.getMessage());
+                    }
+                    Thread.sleep(DELAY_PAGES);
+                }
+            }
+
+            List<Announcement> newAds = new ArrayList<>();
+            for (Announcement ad : freshAdsMap.values()) {
+                if (!existingIds.contains(ad.getId())) newAds.add(ad);
+            }
+
+            log.printf("%n✅ Нових для завантаження: %d | ⏭ Пропущено: %d%n", newAds.size(), freshAdsMap.size() - newAds.size());
+            if (newAds.isEmpty()) {
+                log.println("\n🎉 База DimRia актуальна.");
+                DimRiaStorageService.saveLastUpdateTime();
+                return;
+            }
+
+            DimRiaStorageService.appendNewIds(newAds, existingIds.size());
+
+            log.println("\n=== [DimRia HTML] ЕТАП 2: Завантаження деталей НОВИХ оголошень ===");
+            int success = 0, failed = 0;
+            for (int i = 0; i < newAds.size(); i++) {
+                Announcement ad = newAds.get(i);
+                log.printf("[%d/%d] %s | %s | ID: %s%n", i + 1, newAds.size(), ad.getCity().getLabel(), ad.getCategory().getLabel(), ad.getId());
+                try {
+                    Document doc = OlxHtmlParser.getDocument(ad.getUrl());
+                    String jsonState = DimRiaHtmlParser.buildDetailJson(doc, ad);
+
+                    DimRiaStorageService.saveAdDetailJson(ad.getId(), jsonState);
+                    success++;
+                    log.printf("  ✅ dimria_post_%s.json%n", ad.getId());
+                } catch (Exception e) {
+                    failed++;
+                    log.printf("  ❌ Помилка завантаження деталей ID %s: %s%n", ad.getId(), e.getMessage());
+                }
+                if (i < newAds.size() - 1) Thread.sleep(DELAY_POSTS);
+            }
+
+            DimRiaStorageService.saveLastUpdateTime();
+            log.printf("%n=== DimRia ГОТОВО === ✅ Збережено нових файлів: %d | ❌ Помилки: %d%n", success, failed);
+        } catch (Exception e) {
+            log.println("💥 Критична помилка контролера DimRia: " + e.getMessage());
         }
-        System.out.println("\n[DimRiaController] Усі квартири успішно скачані у папку '" + folderName + "'!");
     }
 
     /**
-     * Внутрішній метод першого етапу з підтримкою автоматичної ротації ключів.
-     * Тепер приймає параметр targetFolder для збереження файлів у конкретну директорію.
-     * * @param operationType тип операції (1 - продаж, 3 - оренда)
-     * @param prefix суфікс для імені файлу ("prodazh" або "orenda")
-     * @param targetFolder назва папки в корені проєкту (наприклад, "apartment_id")
+     * Збирає ID оголошень напряму з внутрішнього JSON API, використовуючи браузерні Cookies
      */
-    private static void downloadPagesByOperation(int operationType, String prefix, String targetFolder) {
-        int page = 0;
-        boolean hasMoreData = true;
+    private static List<Announcement> collectAllPages(City city, CategoryLocation category) throws Exception {
+        List<Announcement> results = new ArrayList<>();
 
-        while (hasMoreData) {
-            // Динамічно беремо АКТИВНИЙ ключ через getActiveKey()
-            String url = "https://developers.ria.com/dom/search?"
-                    + "api_key=" + getActiveKey()
-                    + "&category_id=1"
-                    + "&realty_type_id=2"
-                    + "&state_id=25"
-                    + "&city_id=25"
-                    + "&operation_type=" + operationType
-                    + "&count=100"
-                    + "&page=" + page;
+        // operation=3 (оренда), operation=1 (продаж)
+        String operation = (category == CategoryLocation.SALE) ? "1" : "3";
+        String dimRiaCityId = getDimRiaCityId(city);
 
-            HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).GET().build();
-            try {
-                System.out.println("-> [Етап 1] Запит сторінки " + page + " за допомогою ключа №" + (currentKeyIndex + 1) + "...");
-                HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+        // Звертаємося до точного внутрішнього JSON API сайту
+        StringBuilder sb = new StringBuilder("https://dom.ria.com/node/api/searchBlocks?category=1&realty_type=2");
+        sb.append("&operation=").append(operation)
+                .append("&state_id=25")
+                .append("&price_cur=1")
+                .append("&wo_dupl=1")
+                .append("&excludeSold=1")
+                .append("&sort=inspected_sort")
+                .append("&limit=60") // Беремо відразу 60 об'єктів
+                .append("&client=searchV2");
 
-                if (response.statusCode() == 200) {
-                    String jsonResponse = response.body();
+        if (!dimRiaCityId.equals("0")) {
+            sb.append("&city_ids=").append(dimRiaCityId);
+        }
 
-                    if (jsonResponse.contains("\"items\":[]") || !jsonResponse.contains("\"items\"")) {
-                        System.out.println("-> На сторінці " + page + " немає даних або досягнуто кінця списку.");
-                        hasMoreData = false;
-                    } else {
-                        String fileName = "перший 100 запит_" + prefix + "_page_" + page + ".json";
+        String apiUrl = sb.toString();
+        log.printf("    [API Request with Cookies] %s%n", apiUrl);
 
-                        // ЗМІНА ТУТ: об'єднуємо папку та ім'я файлу. Шлях буде: apartament_id/ім'я_файлу.json
-                        java.nio.file.Path outputPath = Paths.get(targetFolder, fileName);
+        // Твої живі куки з браузера
+        String myCookies = "_clsk=jnc1lq%5E1783601780001%5E3%5E1%5En.clarity.ms%2Fcollect; "
+                + "_ga_HJZP5P77GH=GS2.1.s1783596981$o1$g1$t1783600525$j60$l0$h125488171; "
+                + "_fbp=fb.1.1783596981980.809981691374725438; gdpr=[2,3]; "
+                + "niuid=44b0e631e72f437d6efbd9dafd49bf19; "
+                + "lang=uk; nisess=99b037098fe9dc388103f9a761cfd36f; "
+                + "PHPSESSID=p1v1qk4b5b69ofv701277ajei1; "
+                + "PSP_CHECK=f8a07316ce79d55903e3c760bb5c403db4c07ed78043e04e4c81c3639571251617080931; ui=dfc99cd805afa812";
 
-                        // Зберігаємо файл за новим цільовим шляхом
-                        Files.writeString(outputPath, jsonResponse);
+        // Робимо запит до API, передаючи куки браузера
+        String jsonResponse = org.jsoup.Jsoup.connect(apiUrl)
+                .userAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                .header("Accept", "application/json, text/javascript, */*; q=0.01")
+                .header("X-Requested-With", "XMLHttpRequest") // Показуємо, що це AJAX запит від фронтенду
+                .header("Cookie", myCookies)
+                .header("Referer", "https://dom.ria.com/uk/")
+                .ignoreContentType(true) // Ігноруємо MIME-тип, бо чекаємо JSON текст
+                .execute()
+                .body();
 
-                        System.out.println("-> [УСПІХ] Списковий файл збережено в " + targetFolder + ": " + fileName);
-                        page++;
-                        Thread.sleep(DELAY_MS); // Коротка пауза 3 секунди між сторінками
-                    }
-                } else if (response.statusCode() == 429) {
-                    System.err.println("!!! [Етап 1] Ключ №" + (currentKeyIndex + 1) + " зловив ліміт 429!");
+        // Шукаємо ID оголошень у JSON (тепер тут будуть тільки чисті масиви ID!)
+        Pattern p = Pattern.compile("\\b\\d{8,10}\\b");
+        Matcher m = p.matcher(jsonResponse);
 
-                    // Змінюємо ключ на наступний із нашого пулу
-                    switchToNextKey();
+        while (m.find()) {
+            String id = m.group();
+            String finalId = id;
 
-                    // Індекс сторінки (page++) НЕ збільшуємо, цикл просто повторить запит цієї ж сторінки з новим ключем
-                    Thread.sleep(1000); // Секундна пауза для стабільності
+            Announcement ad = new Announcement(
+                    id, "https://dom.ria.com/uk/realty-" + id + ".html",
+                    "Об'єкт DimRia", "Договірна", "", city, category
+            );
 
-                } else {
-                    System.err.println("Помилка Етапу 1. Сервер повернув код: " + response.statusCode());
-                    hasMoreData = false;
-                }
-            } catch (IOException | InterruptedException e) {
-                System.err.println("Помилка мережі на Етапі 1: " + e.getMessage());
-                hasMoreData = false;
+            if (results.stream().noneMatch(c -> c.getId().equals(finalId))) {
+                results.add(ad);
             }
         }
+
+        return results;
     }
 
-
-
+    /**
+     * Повертає внутрішні ID міст/селів для пошукової системи DimRia.
+     */
+    private static String getDimRiaCityId(City city) {
+        switch (city) {
+            case CHERNIVTSI:
+                return "25";     // 25 — ID міста Чернівці (і його внутрішніх районів)
+            case GODILIV:
+                return "24729";  // Внутрішній ID села Годилів
+            case KOROVIA:
+                return "24734";  // Внутрішній ID села Коровія
+            case CHAGOR:
+                return "24754";  // Внутрішній ID села Чагор
+            default:
+                return "0";      // 0 — пошук загалом по всій області (state_id=25)
+        }
+    }
 }
 
 

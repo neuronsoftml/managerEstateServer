@@ -3,9 +3,8 @@ package controllers.olx;
 import core.tools.olx.OlxHtmlParser;
 import core.tools.olx.OlxStorageService;
 import model.City;
-import model.ProjectFolder;
 import model.CategoryLocation;
-import model.olx.Announcement;
+import model.Announcement;
 import org.jsoup.nodes.Document;
 
 import java.io.*;
@@ -20,10 +19,16 @@ import java.util.*;
  */
 public class OlxController {
     private static final String OLX_BASE = "https://www.olx.ua/uk/nedvizhimost/kvartiry/";
-    private static final int DELAY_PAGES = 2_000;
-    private static final int DELAY_POSTS = 1_500;
+    private static final int DELAY_PAGES = 0;
+    private static final int DELAY_POSTS = 0;
 
-    private static final City[] ACTIVE_CITIES = { City.CHERNIVTSI, City.GODILIV, City.SADGORA };
+    private static final City[] ACTIVE_CITIES = {
+            City.CHERNIVTSI,
+            City.GODILIV,
+            City.KOROVIA,
+            City.CHAGOR
+    };
+
     private static final CategoryLocation[] ACTIVE_CATEGORIES = { CategoryLocation.RENT_LONG, CategoryLocation.SALE };
     private static PrintStream log;
 
@@ -33,8 +38,8 @@ public class OlxController {
             OlxStorageService.initDirectories();
             log.println("📁 Робоча директорія: " + OlxStorageService.getRootAbsolutePath());
 
-            if (!OlxStorageService.isUpdateNeeded(6, log)) {
-                log.println("⏳ База оновлювалась менше 6 годин тому. Пропускаємо.");
+            if (!OlxStorageService.isUpdateNeeded(1, log)) {
+                log.println("⏳ База оновлювалась менше 1 годин тому. Пропускаємо.");
                 return;
             }
 

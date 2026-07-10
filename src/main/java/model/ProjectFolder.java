@@ -10,11 +10,11 @@ import java.nio.file.Paths;
 public enum ProjectFolder {
     // Наші папки та їхні точні системні імена
     OUTPUT_DIR("output"),
-    POSTS_DIR("posts"),
-    ID_LISTS("apartment_id"),
     DETAILS("apartment_details"),
     OLX_IDS("olx_id"),
     OLX_DETAILS("olx_details"),
+    DIM_RIA_IDS("dim_ria_id"),
+    DIM_RIA_DETAILS("dim_ria_details"),
     ROOT("data"),
     ALL_IDS_FILE("all_ids.json"),
     META_FILE("meta.json");

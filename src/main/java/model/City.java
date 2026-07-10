@@ -8,9 +8,14 @@ package model;
  * сегмент URL після категорії, напр: .../prodazha-kvartir/chernovtsy/
  **/
 public enum City {
-    CHERNIVTSI  ("chernovtsy",    "Чернівці"),
-    SADGORA     ("sadgora",          "Садгора"),
-    GODILIV     ("godilov",          "Годилів");
+    // Існуючі міста та райони
+    CHERNIVTSI    ("chernovtsy",              "Чернівці"),
+    GODILIV       ("godilov",                 "Годилів"),
+
+
+    // ТОПОВІ ПЕРЕДМІСТЯ ЧЕРНІВЦІВ (ДЕ БАГАТО КВАРТИР/НОВОБУДОВ)
+    KOROVIA       ("koroviya",                "Коровія"),
+    CHAGOR        ("chagor",                  "Чагор");
 
     private final String slug;
     private final String label;
