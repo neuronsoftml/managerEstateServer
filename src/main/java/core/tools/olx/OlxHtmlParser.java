@@ -165,19 +165,18 @@ public class OlxHtmlParser {
 
         return new Announcement(
                 ad.getId(),
-                ad.getCity().getLabel(),
-                ad.getCategory().getLabel(),
+                ad.getCity(),      // ФІКС: передаємо готовий enum напряму,
+                ad.getCategory(),  // без round-trip через getLabel()/findByRawString()
                 ad.getUrl(),
                 ad.getTitle(),
                 ad.getPriceRaw(),
-                ad.getLocation(),
+                location,
                 datePublished,
                 seller,
                 null,
                 description,
                 params,
                 photos
-
         );
     }
 

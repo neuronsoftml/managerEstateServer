@@ -4,6 +4,7 @@ import controllers.UpdateBaseController;
 import controllers.telegram.TelegramController;
 import materials.Emoji;
 import model.ConsoleWindow;
+import model.telegram.agent.TelegramScannerTask;
 import sqlite.DatabaseManager;
 
 private static UpdateBaseController updateBaseController;
@@ -34,10 +35,12 @@ private static void startCoreServerFunctionality(){
     startMainScheduler(consoleWindowController.getMainConsole());
     telegramController.start(consoleWindowController.getTelegramBotConsole());
     updateDataBse();
+
+    startAgentTelegramGroup();
 }
 
 /**
- * Цей метод відповідає за оновлення бази даних, кожних 3 годин старт з 00 годин :00 хвилин.
+ * Цей метод відповідає за оновлення бази даних, кожних 1 годин старт з 00 годин :00 хвилин.
  */
 private static void updateDataBse(){
     updateBaseController.startDailyTask(
@@ -71,6 +74,15 @@ private static void startMainScheduler(ConsoleWindow consoleWindowMain) {
     }, 0, 1, TimeUnit.HOURS); // heartbeat кожну годину
 
     mainOut.println(Emoji.CALENDAR.view() + " Головний планувальник запущено.");
+}
+
+/**
+ * Запускає агента для скану груп в телеграмі
+ */
+private static void startAgentTelegramGroup() {
+    Thread scannerThread = new Thread(new TelegramScannerTask(), "Telegram-Scanner-Thread");
+    scannerThread.setDaemon(false); // щоб процес не закривався системою
+    scannerThread.start();
 }
 
 

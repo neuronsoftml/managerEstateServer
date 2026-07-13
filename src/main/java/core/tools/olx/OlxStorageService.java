@@ -30,28 +30,81 @@ public class OlxStorageService {
         return new File(ROOT).getAbsolutePath();
     }
 
-    public static boolean isUpdateNeeded(long hours, PrintStream log) {
+    /**
+     * ПЕРЕВІРКА СТАНУ (замість старого isUpdateNeeded):
+     * Перевіряє, чи минула 1 година І чи обидва процеси завершені (true).
+     */
+    public static boolean isSchedulerReadyToRestart(long hours, PrintStream log) {
         File meta = new File(META_FILE);
-        if (!meta.exists()) return true;
+        if (!meta.exists()) return true; // Якщо файлу ще немає — запускаємо з чистого аркуша
         try {
             String content = Files.readString(meta.toPath(), StandardCharsets.UTF_8);
-            Matcher m = Pattern.compile("\"last_update\"\\s*:\\s*\"([^\"]+)\"").matcher(content);
-            if (!m.find()) return true;
 
-            LocalDateTime lastUpdate = LocalDateTime.parse(m.group(1), DT);
-            if (lastUpdate.isAfter(LocalDateTime.now().minusHours(hours))) {
-                log.printf("⏱ Останнє оновлення: %s%n", lastUpdate.format(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm")));
+            Matcher mTime = Pattern.compile("\"last_update\"\\s*:\\s*\"([^\"]+)\"").matcher(content);
+            Matcher mDownload = Pattern.compile("\"is_download_complete\"\\s*:\\s*(true|false)").matcher(content);
+            Matcher mPublish = Pattern.compile("\"is_publication_complete\"\\s*:\\s*(true|false)").matcher(content);
+
+            LocalDateTime lastUpdate = mTime.find() ? LocalDateTime.parse(mTime.group(1), DT) : LocalDateTime.MIN;
+            boolean downloadComplete = mDownload.find() && Boolean.parseBoolean(mDownload.group(1));
+            boolean publishComplete = mPublish.find() && Boolean.parseBoolean(mPublish.group(1));
+
+            // 1. Умова часу
+            if (!lastUpdate.isBefore(LocalDateTime.now().minusHours(hours))) {
                 return false;
             }
+
+            // 2. Умова завершеності потоків
+            if (!downloadComplete || !publishComplete) {
+                log.printf("⏳ Час оновлення настав, але потоки ще зайняті [Скачування: %b | Telegram: %b]. Пропуск такту.%n",
+                        downloadComplete, publishComplete);
+                return false;
+            }
+
+            return true;
         } catch (Exception e) {
-            log.println("⚠️ Не вдалося прочитати meta.json: " + e.getMessage());
+            log.println("⚠️ Помилка аналізу файлу метаданих (запуск дозволено): " + e.getMessage());
+            return true;
         }
-        return true;
     }
 
+    /**
+     * Ініціалізація/скидання файлу конфігурації: ставимо час і виставляємо false для процесів.
+     */
     public static void saveLastUpdateTime() throws IOException {
-        String json = "{\n  \"last_update\": \"" + LocalDateTime.now().format(DT) + "\"\n}";
+        String json = "{\n" +
+                "  \"last_update\": \"" + LocalDateTime.now().format(DT) + "\",\n" +
+                "  \"is_download_complete\": false,\n" +
+                "  \"is_publication_complete\": false\n" +
+                "}";
+        Files.createDirectories(Paths.get(IDS_DIR));
         Files.writeString(Paths.get(META_FILE), json, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Точкове синхронізоване оновлення маркерів стану в JSON
+     */
+    public static synchronized void updateStateStatus(boolean downloadComplete, boolean publishComplete) {
+        try {
+            File meta = new File(META_FILE);
+            String lastUpdateTime = LocalDateTime.now().format(DT);
+
+            if (meta.exists()) {
+                String content = Files.readString(meta.toPath(), StandardCharsets.UTF_8);
+                Matcher mTime = Pattern.compile("\"last_update\"\\s*:\\s*\"([^\"]+)\"").matcher(content);
+                if (mTime.find()) {
+                    lastUpdateTime = mTime.group(1);
+                }
+            }
+
+            String json = "{\n" +
+                    "  \"last_update\": \"" + lastUpdateTime + "\",\n" +
+                    "  \"is_download_complete\": " + downloadComplete + ",\n" +
+                    "  \"is_publication_complete\": " + publishComplete + "\n" +
+                    "}";
+            Files.writeString(Paths.get(META_FILE), json, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            System.err.println("⚠️ Не вдалося оновити статус-файл meta.json: " + e.getMessage());
+        }
     }
 
     public static Set<String> loadExistingIds(PrintStream log) {

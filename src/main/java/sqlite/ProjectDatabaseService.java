@@ -4,6 +4,7 @@ import model.Announcement;
 import model.CategoryLocation;
 import model.City;
 import model.telegram.UserSession;
+import model.telegram.agent.TelegramGroup;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -55,6 +56,18 @@ public class ProjectDatabaseService {
                 // Колонка вже існує — це нормально, ігноруємо
             }
 
+            //TODO Відповідає за спісок груп телеграм для мотітору
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS monitored_groups_telegram (
+                    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id                     TEXT NOT NULL UNIQUE,
+                    group_name                  TEXT,
+                    last_processed_message_id   INTEGER DEFAULT 0,
+                    is_active                   INTEGER DEFAULT 1
+                )
+            """);
+
+
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS olx_photos (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,6 +88,7 @@ public class ProjectDatabaseService {
                         ON DELETE CASCADE
                 )
             """);
+
 
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_olx_city          ON olx_announcements(city)");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_olx_category      ON olx_announcements(category)");
@@ -359,5 +373,71 @@ public class ProjectDatabaseService {
             System.err.println("⚠️ Параметри для ID=" + id + ": " + e.getMessage());
         }
         return params;
+    }
+
+
+    // ── МЕТОДИ ДЛЯ ТАБЛИЦІ monitored_groups_telegram ──────────────────────────
+
+    /**
+     * Отримує список усіх активних груп Telegram для фонового сканера.
+     */
+    public static List<TelegramGroup> getActiveMonitoredGroups() {
+        List<TelegramGroup> groups = new ArrayList<>();
+        String sql = "SELECT id, chat_id, group_name, last_processed_message_id, is_active FROM monitored_groups_telegram WHERE is_active = 1";
+
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+
+            while (rs.next()) {
+                groups.add(new TelegramGroup(
+                        rs.getInt("id"),
+                        rs.getString("chat_id"),
+                        rs.getString("group_name"),
+                        rs.getLong("last_processed_message_id"),
+                        rs.getInt("is_active") == 1
+                ));
+            }
+        } catch (SQLException e) {
+            System.err.println("❌ Помилка зчитування активних груп Telegram: " + e.getMessage());
+        }
+        return groups;
+    }
+
+    /**
+     * Оновлює ID останнього обробленого повідомлення у конкретній групі.
+     * Це гарантує, що після перезапуску бот не буде надсилати старі дублікати.
+     */
+    public static void updateGroupLastMessageId(String chatId, long lastMessageId) {
+        String sql = "UPDATE monitored_groups_telegram SET last_processed_message_id = ? WHERE chat_id = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setLong(1, lastMessageId);
+            ps.setString(2, chatId);
+            ps.executeUpdate();
+
+        } catch (SQLException e) {
+            System.err.println("❌ Помилка оновлення last_processed_message_id для " + chatId + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Динамічно додає нову Telegram групу/канал на моніторинг.
+     * Якщо група з таким chat_id вже існує, база даних проігнорує запис без помилок (завдяки INSERT OR IGNORE).
+     */
+    public static boolean addGroupToMonitor(String chatId, String groupName) {
+        String sql = "INSERT OR IGNORE INTO monitored_groups_telegram (chat_id, group_name) VALUES (?, ?)";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setString(1, chatId);
+            ps.setString(2, groupName);
+            return ps.executeUpdate() > 0;
+
+        } catch (SQLException e) {
+            System.err.println("❌ Помилка додавання групи " + groupName + " на моніторинг: " + e.getMessage());
+            return false;
+        }
     }
 }

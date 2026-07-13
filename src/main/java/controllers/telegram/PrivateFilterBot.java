@@ -16,7 +16,6 @@ import org.telegram.telegrambots.meta.api.objects.media.InputMedia;
 import org.telegram.telegrambots.meta.api.objects.media.InputMediaPhoto;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
-import sqlite.DatabaseManager;
 import sqlite.ProjectDatabaseService;
 
 import java.math.BigDecimal;
@@ -147,7 +146,6 @@ public class PrivateFilterBot extends TelegramLongPollingBot {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
 
-        // Перевіряємо тип угоди на основі обраної категорії
         boolean isRent = session.getSelectedCategory() != null &&
                 (session.getSelectedCategory().name().contains("RENT") ||
                         session.getSelectedCategory().getLabel().toLowerCase().contains("оренда"));
@@ -234,13 +232,28 @@ public class PrivateFilterBot extends TelegramLongPollingBot {
                 session.setState(BotState.WAITING_FOR_CATEGORY);
                 editToCategorySelection(chatId, messageId, session.getSelectedCity());
             }
-            // КРОК 2 -> КРОК 3 (Кімнати)
+            // КРОК 2 -> КРОК 3 або ОДРАЗУ НА ВИДАЧУ ДЛЯ ПОДОБОВОЇ ОРЕНДИ
             else if (data.startsWith("CAT_") && session.getState() == BotState.WAITING_FOR_CATEGORY) {
-                session.setSelectedCategory(CategoryLocation.valueOf(data.replace("CAT_", "")));
-                session.setState(BotState.WAITING_FOR_ROOMS);
-                editToRoomsSelection(chatId, messageId);
+                CategoryLocation selectedCat = CategoryLocation.valueOf(data.replace("CAT_", ""));
+                session.setSelectedCategory(selectedCat);
+
+                // ПЕРЕВІРКА НА ПОДОБОВУ ОРЕНДУ
+                if (selectedCat == CategoryLocation.RENT_SHORT || selectedCat.name().equals("RENT_SHORT")) {
+                    // Пропускаємо фільтри: скидаємо кімнати і ціну
+                    session.setSelectedRooms(null);
+                    session.setPriceRangeUsd(null, null);
+                    session.setCurrentOffset(0);
+                    session.setState(BotState.SHOWING_RESULTS);
+
+                    clearMarkup(chatId, messageId);
+                    sendAdsBatch(chatId, session);
+                } else {
+                    // Звичайна логіка для довгострокової оренди та продажу
+                    session.setState(BotState.WAITING_FOR_ROOMS);
+                    editToRoomsSelection(chatId, messageId);
+                }
             }
-            // КРОК 3 -> КРОК 4 (Ціна з урахуванням обраної категорії)
+            // КРОК 3 -> КРОК 4 (Ціна)
             else if (data.startsWith("ROOMS_") && session.getState() == BotState.WAITING_FOR_ROOMS) {
                 String roomsVal = data.replace("ROOMS_", "");
                 if (roomsVal.equals("ANY")) {
@@ -264,42 +277,53 @@ public class PrivateFilterBot extends TelegramLongPollingBot {
                 session.setCurrentOffset(0);
                 session.setState(BotState.SHOWING_RESULTS);
 
-                try {
-                    EditMessageReplyMarkup clearMarkup = new EditMessageReplyMarkup();
-                    clearMarkup.setChatId(String.valueOf(chatId));
-                    clearMarkup.setMessageId(messageId);
-                    clearMarkup.setReplyMarkup(null);
-                    execute(clearMarkup);
-                } catch (Exception ignored) {}
-
+                clearMarkup(chatId, messageId);
                 sendAdsBatch(chatId, session);
             }
             // ПАГІНАЦІЯ ТА КЕРУВАННЯ ВИДАЧЕЮ
             else if (session.getState() == BotState.SHOWING_RESULTS) {
                 if (data.equals("NEXT_3")) {
-                    try {
-                        EditMessageReplyMarkup clearMarkup = new EditMessageReplyMarkup();
-                        clearMarkup.setChatId(String.valueOf(chatId));
-                        clearMarkup.setMessageId(messageId);
-                        clearMarkup.setReplyMarkup(null);
-                        execute(clearMarkup);
-                    } catch (Exception ignored) {}
-
+                    clearMarkup(chatId, messageId);
                     session.setCurrentOffset(session.getCurrentOffset() + 3);
                     sendAdsBatch(chatId, session);
                 }
                 else if (data.equals("BACK_TO_FILTERS") || data.equals("EXIT_BOT")) {
-                    try {
-                        EditMessageReplyMarkup clearMarkup = new EditMessageReplyMarkup();
-                        clearMarkup.setChatId(String.valueOf(chatId));
-                        clearMarkup.setMessageId(messageId);
-                        clearMarkup.setReplyMarkup(null);
-                        execute(clearMarkup);
-                    } catch (Exception ignored) {}
+                    clearMarkup(chatId, messageId);
 
                     if (data.equals("BACK_TO_FILTERS")) {
-                        userSessions.remove(chatId);
-                        startWorkflow(chatId);
+                        // Якщо це була подобова оренда, повертаємось на вибір категорій, інакше скидаємо все повністю
+                        CategoryLocation currentCat = session.getSelectedCategory();
+                        if (currentCat == CategoryLocation.RENT_SHORT || (currentCat != null && currentCat.name().equals("RENT_SHORT"))) {
+                            City savedCity = session.getSelectedCity();
+                            userSessions.remove(chatId);
+
+                            UserSession newSession = new UserSession(BotState.WAITING_FOR_CATEGORY);
+                            newSession.setSelectedCity(savedCity);
+                            userSessions.put(chatId, newSession);
+
+                            // Надсилаємо чисте повідомлення вибору категорій, замість startWorkflow
+                            SendMessage catMsg = new SendMessage();
+                            catMsg.setChatId(String.valueOf(chatId));
+                            catMsg.setText("🏢 Район \"" + savedCity.getLabel() + "\" зафіксовано.\n🔑 Оберіть тип угоди:");
+                            InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+                            List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+                            for (CategoryLocation cat : CategoryLocation.values()) {
+                                InlineKeyboardButton b = new InlineKeyboardButton();
+                                b.setText(cat.getLabel());
+                                b.setCallbackData("CAT_" + cat.name());
+                                rows.add(Collections.singletonList(b));
+                            }
+                            InlineKeyboardButton back = new InlineKeyboardButton();
+                            back.setText("⬅️ Назад до районів");
+                            back.setCallbackData("BACK_TO_CITY");
+                            rows.add(Collections.singletonList(back));
+                            markup.setKeyboard(rows);
+                            catMsg.setReplyMarkup(markup);
+                            execute(catMsg);
+                        } else {
+                            userSessions.remove(chatId);
+                            startWorkflow(chatId);
+                        }
                     } else {
                         session.setState(BotState.START);
                         userSessions.remove(chatId);
@@ -313,6 +337,16 @@ public class PrivateFilterBot extends TelegramLongPollingBot {
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    private void clearMarkup(long chatId, int messageId) {
+        try {
+            EditMessageReplyMarkup clearMarkup = new EditMessageReplyMarkup();
+            clearMarkup.setChatId(String.valueOf(chatId));
+            clearMarkup.setMessageId(messageId);
+            clearMarkup.setReplyMarkup(null);
+            execute(clearMarkup);
+        } catch (Exception ignored) {}
     }
 
     private void sendAdsBatch(long chatId, UserSession session) throws Exception {

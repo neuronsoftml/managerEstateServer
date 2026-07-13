@@ -8,7 +8,6 @@ import java.io.File;
 import java.io.PrintStream;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -20,7 +19,6 @@ import java.util.List;
  *  - Окремий потік для Telegram щоб не зависав OLX-Thread
  */
 public class OlxImportService {
-    // Оголошення старші цього порогу — в БД зберігаємо, але в Telegram НЕ відправляємо
     private static final int TELEGRAM_MAX_AGE_DAYS = 3;
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("dd.MM.yyyy");
 
@@ -34,6 +32,9 @@ public class OlxImportService {
 
         if (announcements.isEmpty()) {
             log.println("📭 Немає нових записів для імпорту.");
+            // Роботу з завантаження завершено успішно
+            OlxStorageService.updateStateStatus(true, false);
+            sendUnsentToTelegram(log, true);
             return;
         }
 
@@ -47,8 +48,6 @@ public class OlxImportService {
             if (saved) {
                 success++;
 
-                // Якщо оголошення старше 7 днів — одразу позначаємо як "вже відправлено"
-                // щоб воно ніколи не потрапило в Telegram чергу
                 if (isTooOldForTelegram(a)) {
                     ProjectDatabaseService.markAsSentToTelegram(a.getId());
                     tooOld++;
@@ -62,17 +61,16 @@ public class OlxImportService {
             }
         }
 
-        log.printf("✅ Імпорт: %d збережено | %d помилок | %d старших 7 днів (пропущено для TG)%n",
-                success, failed, tooOld);
+        log.printf("✅ Імпорт: %d збережено | %d помилок | %d старших %d днів (пропущено для TG)%n",
+                success, failed, tooOld, TELEGRAM_MAX_AGE_DAYS);
 
-        // Відправляємо в Telegram тільки свіжі (sent_to_telegram = 0)
-        sendUnsentToTelegram(log);
+        // Фіксуємо у файлі, що етап завантаження/імпорту завершено
+        OlxStorageService.updateStateStatus(true, false);
+
+        // Запускаємо фонову відправку невідправленого
+        sendUnsentToTelegram(log, true);
     }
 
-    /**
-     * Перевіряє чи оголошення старше TELEGRAM_MAX_AGE_DAYS днів.
-     * Якщо дата не парситься — вважаємо свіжим (відправляємо).
-     */
     private static boolean isTooOldForTelegram(Announcement a) {
         String dateStr = a.getDatePublished();
         if (dateStr == null || dateStr.isBlank()) return false;
@@ -81,44 +79,46 @@ public class OlxImportService {
             LocalDate threshold = LocalDate.now().minusDays(TELEGRAM_MAX_AGE_DAYS);
             return published.isBefore(threshold);
         } catch (Exception e) {
-            return false; // невідомий формат — не блокуємо
+            return false;
         }
     }
 
     /**
-     * Відправляє в Telegram всі оголошення де sent_to_telegram = 0.
-     * Викликається і після імпорту, і при старті програми.
+     * Відправляє оголошення в Telegram без блокування головного шедулера.
      */
-    public static void sendUnsentToTelegram(PrintStream log) {
+    public static void sendUnsentToTelegram(PrintStream log, boolean currentDownloadState) {
         List<Announcement> unsent = ProjectDatabaseService.getUnsentAnnouncements();
 
         if (unsent.isEmpty()) {
             log.println("📨 Немає невідправлених оголошень для Telegram.");
+            OlxStorageService.updateStateStatus(currentDownloadState, true);
             return;
         }
 
-        log.printf("📨 Знайдено невідправлених: %d — запускаємо Telegram-Sender-Thread%n",
-                unsent.size());
+        log.printf("📨 Знайдено невідправлених: %d — запускаємо Telegram-Sender-Thread%n", unsent.size());
 
         Thread telegramThread = new Thread(() -> {
             int sent = 0, tgFailed = 0;
-            for (Announcement a : unsent) {
-                try {
-                    TelegramNotificationService.sendNewAnnouncement(a);
-                    // Позначаємо тільки після успішної відправки
-                    ProjectDatabaseService.markAsSentToTelegram(a.getId());
-                    sent++;
-                    Thread.sleep(3_500);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception e) {
-                    tgFailed++;
-                    // НЕ позначаємо — при наступному запуску спробуємо знову
-                    System.err.printf("❌ [Telegram] ID=%s: %s%n", a.getId(), e.getMessage());
+            try {
+                for (Announcement a : unsent) {
+                    try {
+                        TelegramNotificationService.sendNewAnnouncement(a);
+                        ProjectDatabaseService.markAsSentToTelegram(a.getId());
+                        sent++;
+                        Thread.sleep(3_500);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    } catch (Exception e) {
+                        tgFailed++;
+                        System.err.printf("❌ [Telegram] ID=%s: %s%n", a.getId(), e.getMessage());
+                    }
                 }
+            } finally {
+                System.out.printf("📨 [Telegram] Відправлено: %d | Помилок: %d%n", sent, tgFailed);
+                // Після завершення надсилання (успішного чи збійного) маркуємо процес публікації як TRUE
+                OlxStorageService.updateStateStatus(currentDownloadState, true);
             }
-            System.out.printf("📨 [Telegram] Відправлено: %d | Помилок: %d%n", sent, tgFailed);
         }, "Telegram-Sender-Thread");
 
         telegramThread.setDaemon(true);

@@ -10,9 +10,9 @@ package model;
  */
 
 public enum CategoryLocation {
-    RENT_LONG   ("dolgosrochnaya-arenda-kvartir", "Оренда (довгострокова)"),
-    RENT_SHORT  ("posutochno-pochasovo",           "Оренда (подобова)"),
-    SALE        ("prodazha-kvartir",               "Продаж");
+    RENT_LONG   ("nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir", "Оренда (довгострокова)"),
+    RENT_SHORT  ("zhytlo-podobovo/podobovo-pohodynno-kvartyry",          "Оренда (подобова)"),
+    SALE        ("nedvizhimost/kvartiry/prodazha-kvartir",               "Продаж");
 
     private final String urlSegment;
     private final String label;

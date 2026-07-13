@@ -10,15 +10,8 @@ import org.jsoup.nodes.Document;
 import java.io.*;
 import java.util.*;
 
-/**
- * OLX парсер з підтримкою:
- *  - Динамічних категорій пошуку (OlxSearchCategory)
- *  - Динамічного списку міст (OlxCity)
- *  - Глобальної дедуплікації між усіма комбінаціями місто×категорія
- *  - Інкрементального оновлення (пропуск вже збережених ID)
- */
 public class OlxController {
-    private static final String OLX_BASE = "https://www.olx.ua/uk/nedvizhimost/kvartiry/";
+    private static final String OLX_BASE = "https://www.olx.ua/uk/";
     private static final int DELAY_PAGES = 0;
     private static final int DELAY_POSTS = 0;
 
@@ -29,19 +22,25 @@ public class OlxController {
             City.CHAGOR
     };
 
-    private static final CategoryLocation[] ACTIVE_CATEGORIES = { CategoryLocation.RENT_LONG, CategoryLocation.SALE };
+    private static final CategoryLocation[] ACTIVE_CATEGORIES = {
+            CategoryLocation.RENT_LONG,
+            CategoryLocation.SALE,
+            CategoryLocation.RENT_SHORT
+    };
     private static PrintStream log;
 
-    public static void start(PrintStream printStream) {
+    /**
+     * Запускає цикл збору оголошень з OLX.
+     * @param printStream Потік для виведення логів у вікно консолі
+     * @return true — якщо парсинг успішно відбувся (були знайдені чи перевірені оголошення)
+     */
+    public static boolean start(PrintStream printStream) {
         log = printStream;
         try {
             OlxStorageService.initDirectories();
             log.println("📁 Робоча директорія: " + OlxStorageService.getRootAbsolutePath());
 
-            if (!OlxStorageService.isUpdateNeeded(1, log)) {
-                log.println("⏳ База оновлювалась менше 1 годин тому. Пропускаємо.");
-                return;
-            }
+            // Перевірку часу ВИЛУЧЕНО звідси. Тепер за це відповідає UpdateBaseController через JSON-статус.
 
             log.println("\n=== ЕТАП 1: Збір ID оголошень ===");
             Set<String> existingIds = OlxStorageService.loadExistingIds(log);
@@ -74,7 +73,12 @@ public class OlxController {
             }
 
             log.printf("%n✅ Нових (не в базі): %d | ⏭ Пропущено: %d%n", newAds.size(), freshAdsMap.size() - newAds.size());
-            if (newAds.isEmpty()) { log.println("\n🎉 База актуальна."); OlxStorageService.saveLastUpdateTime(); return; }
+
+            // Якщо нових оголошень на сайті немає — повертаємо true (роботу успішно виконано, нових даних немає)
+            if (newAds.isEmpty()) {
+                log.println("\n🎉 База актуальна на OLX. Нових оголошень немає.");
+                return true;
+            }
 
             OlxStorageService.appendNewIds(newAds, existingIds.size());
 
@@ -96,10 +100,12 @@ public class OlxController {
                 if (i < newAds.size() - 1) Thread.sleep(DELAY_POSTS);
             }
 
-            OlxStorageService.saveLastUpdateTime();
             log.printf("%n=== ГОТОВО === ✅ Збережено: %d | ❌ Помилки: %d%n", success, failed);
+            return true;
+
         } catch (Exception e) {
-            log.println("💥 Критична помилка: " + e.getMessage());
+            log.println("💥 Критична помилка в OlxController: " + e.getMessage());
+            return false;
         }
     }
 

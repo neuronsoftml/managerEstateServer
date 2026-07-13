@@ -6,6 +6,7 @@ import core.tools.olx.ParserPrice;
 import java.math.BigDecimal;
 import java.util.List;
 
+
 /**
  * Модель оголошення з платформи OLX.
  * Чиста DTO сутність.
@@ -51,15 +52,41 @@ public class Announcement {
         updatePriceFields(priceRaw);
     }
 
-    // Другий конструктор (якщо об'єкти Enum вже готові)
+    // Другий конструктор (якщо об'єкти Enum вже готові, короткий варіант для списку карток)
     public Announcement(String id, String url, String title, String priceRaw, String location,
                         City city, CategoryLocation category){
         this.id = id;
         this.url = url;
         this.title = title;
         this.priceRaw = priceRaw;
+        this.location = location;
         this.city = city;
         this.category = category;
+        updatePriceFields(priceRaw);
+    }
+
+    // Третій конструктор — ПОВНИЙ, для випадку коли City/CategoryLocation вже готові enum-об'єкти
+    // (наприклад, у fillDetails(), де ad.getCity()/ad.getCategory() вже розпарсені раніше).
+    // Використовуйте цей конструктор замість "сирого", щоб уникнути зайвого round-trip
+    // City -> getLabel() -> String -> findByRawString() -> City, який може загубити
+    // значення, якщо канонічна мітка (label) не збігається з тим, що шукає findByRawString.
+    public Announcement(String id, City city, CategoryLocation category, String url,
+                        String title, String priceRaw, String location,
+                        String datePublished, String seller, String phone,
+                        String description, List<String> params, List<String> photos) {
+        this.id            = id;
+        this.city          = city;
+        this.category      = category;
+        this.url           = url;
+        this.title         = title;
+        this.priceRaw      = priceRaw;
+        this.location      = location;
+        this.datePublished = datePublished;
+        this.seller        = seller;
+        this.phone         = phone;
+        this.description   = description;
+        this.params        = params;
+        this.photos        = photos;
         updatePriceFields(priceRaw);
     }
 
