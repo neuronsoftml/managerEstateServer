@@ -1,4 +1,4 @@
-package model.telegram.agent;
+package core.telegram.model.agent;
 
 import sqlite.ProjectDatabaseService;
 

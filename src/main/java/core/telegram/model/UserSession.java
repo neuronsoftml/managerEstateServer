@@ -1,4 +1,4 @@
-package model.telegram;
+package core.telegram.model;
 
 import model.CategoryLocation;
 import model.City;

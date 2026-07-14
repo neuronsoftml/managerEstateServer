@@ -1,7 +1,7 @@
 package core.telegram;
 
 import model.Announcement;
-import model.telegram.Config;
+import core.telegram.model.Config;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;

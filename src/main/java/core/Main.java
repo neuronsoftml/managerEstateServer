@@ -4,7 +4,7 @@ import controllers.UpdateBaseController;
 import controllers.telegram.TelegramController;
 import materials.Emoji;
 import model.ConsoleWindow;
-import model.telegram.agent.TelegramScannerTask;
+import core.telegram.model.agent.TelegramScannerTask;
 import sqlite.DatabaseManager;
 
 private static UpdateBaseController updateBaseController;

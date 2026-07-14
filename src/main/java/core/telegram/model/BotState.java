@@ -1,4 +1,4 @@
-package model.telegram;
+package core.telegram.model;
 
 public enum BotState {
     START,
@@ -6,5 +6,6 @@ public enum BotState {
     WAITING_FOR_CATEGORY,
     SHOWING_RESULTS,
     WAITING_FOR_ROOMS,  // Бот чекає, поки користувач обере 1, 2 або 3 кімнати
-    WAITING_FOR_PRICE // Бот чекає на вибір цінового діапазону в $
+    WAITING_FOR_PRICE, // Бот чекає на вибір цінового діапазону в $
+    MAIN_MENU
 }

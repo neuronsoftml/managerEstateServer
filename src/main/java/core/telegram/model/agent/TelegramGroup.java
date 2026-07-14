@@ -1,4 +1,4 @@
-package model.telegram.agent;
+package core.telegram.model.agent;
 
 public class TelegramGroup {
     private int id;                 // Локальний ID в базі даних

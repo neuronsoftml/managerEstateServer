@@ -1,5 +1,7 @@
 package controllers.telegram;
 
+
+import core.telegram.main.PrivateMainBot;
 import model.ConsoleWindow;
 import org.telegram.telegrambots.meta.TelegramBotsApi;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
@@ -38,7 +40,7 @@ public class TelegramController {
                 botOut.println("🤖 Ініціалізація інтерактивного PrivateFilterBot...");
                 TelegramBotsApi botsApi = new TelegramBotsApi(DefaultBotSession.class);
 
-                PrivateFilterBot privateBot = new PrivateFilterBot();
+                PrivateMainBot privateBot = new PrivateMainBot();
                 botsApi.registerBot(privateBot);
 
                 botOut.println("✅ PrivateFilterBot успішно запущено і він слухає приватні чати!");

@@ -1,4 +1,4 @@
-package model.telegram;
+package core.telegram.model;
 
 public enum Config {
     TOKEN("8689197100:AAGGoRNUWrMd2w-XPE9xvA9-NLd0S2w4Vkk"),

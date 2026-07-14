@@ -3,8 +3,8 @@ import core.tools.PrivatBankRateService;
 import model.Announcement;
 import model.CategoryLocation;
 import model.City;
-import model.telegram.UserSession;
-import model.telegram.agent.TelegramGroup;
+import core.telegram.model.UserSession;
+import core.telegram.model.agent.TelegramGroup;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
