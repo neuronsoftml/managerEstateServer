@@ -3,6 +3,9 @@ package core.telegram.model;
 import model.CategoryLocation;
 import model.City;
 
+import java.util.LinkedHashSet;
+import java.util.Set;
+
 public class UserSession {
     private BotState state;
     private City selectedCity;
@@ -13,6 +16,36 @@ public class UserSession {
     private Integer selectedRooms; // null - будь-яка кількість, або 1, 2, 3
     private Integer minPriceUsd;   // мінімальна ціна діапазону в $
     private Integer maxPriceUsd;   // максимальна ціна діапазону в $
+
+    // ── 🆕 Поля для Wizard-опитувальника "Анкета пошуку житла" ────────────────
+
+    /** Чернетка анкети, яка поступово заповнюється протягом усього wizard'а. */
+    private TenantApplicationForm profileDraft = new TenantApplicationForm();
+
+    /** Обрані райони (мультиселект) — накопичуються до натискання "Зберегти вибір". */
+    private Set<String> selectedDistricts = new LinkedHashSet<>();
+
+    /** ID останнього повідомлення бота з wizard-екраном (щоб знати, що редагувати). */
+    private int wizardMessageId;
+
+    /**
+     * true — якщо зараз бот очікує текст-уточнення "вік/кількість дітей"
+     * після відповіді "Так" на кроці PROFILE_WAITING_CHILDREN.
+     */
+    private boolean awaitingChildrenDetails = false;
+
+    /**
+     * true — якщо зараз бот очікує текст-уточнення про тварину
+     * після відповіді "Так" на кроці PROFILE_WAITING_PETS.
+     */
+    private boolean awaitingPetsDetails = false;
+
+    /**
+     * true — якщо користувач потрапив на цей крок через "✏️ Редагувати дані"
+     * з екрану підтвердження. У такому разі після відповіді на крок
+     * потрібно повернутись одразу на екран підтвердження, а не йти далі по wizard'у.
+     */
+    private boolean profileEditMode = false;
 
     public UserSession(BotState state) {
         this.state = state;
@@ -57,4 +90,24 @@ public class UserSession {
         this.minPriceUsd = minPriceUsd;
         this.maxPriceUsd = maxPriceUsd;
     }
+
+    // ── 🆕 Геттери та Сеттери для Wizard-опитувальника ────────────────────────
+
+    public TenantApplicationForm getProfileDraft() { return profileDraft; }
+    public void setProfileDraft(TenantApplicationForm profileDraft) { this.profileDraft = profileDraft; }
+
+    public Set<String> getSelectedDistricts() { return selectedDistricts; }
+    public void setSelectedDistricts(Set<String> selectedDistricts) { this.selectedDistricts = selectedDistricts; }
+
+    public int getWizardMessageId() { return wizardMessageId; }
+    public void setWizardMessageId(int wizardMessageId) { this.wizardMessageId = wizardMessageId; }
+
+    public boolean isAwaitingChildrenDetails() { return awaitingChildrenDetails; }
+    public void setAwaitingChildrenDetails(boolean awaitingChildrenDetails) { this.awaitingChildrenDetails = awaitingChildrenDetails; }
+
+    public boolean isAwaitingPetsDetails() { return awaitingPetsDetails; }
+    public void setAwaitingPetsDetails(boolean awaitingPetsDetails) { this.awaitingPetsDetails = awaitingPetsDetails; }
+
+    public boolean isProfileEditMode() { return profileEditMode; }
+    public void setProfileEditMode(boolean profileEditMode) { this.profileEditMode = profileEditMode; }
 }

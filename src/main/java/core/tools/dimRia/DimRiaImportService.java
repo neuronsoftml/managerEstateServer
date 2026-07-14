@@ -66,7 +66,8 @@ public class DimRiaImportService {
                     // Тимчасово повертаємо гарне посилання без префіксу для ТГ
                     String tempId = a.getId();
 
-                    TelegramNotificationService.sendNewAnnouncement(a);
+                    TelegramNotificationService telegramNotificationService = TelegramNotificationService.getTelegramNotificationService(log);
+                    telegramNotificationService.sendNewAnnouncement(a);
 
                     // Робимо паузу, щоб уникнути Flood Control від Telegram API
                     try { Thread.sleep(3500); } catch (InterruptedException ignored) {}

@@ -19,7 +19,7 @@ import java.util.List;
  *  - Окремий потік для Telegram щоб не зависав OLX-Thread
  */
 public class OlxImportService {
-    private static final int TELEGRAM_MAX_AGE_DAYS = 3;
+    private static final int TELEGRAM_MAX_AGE_DAYS = 1;
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("dd.MM.yyyy");
 
     public static void importFromJson(String postsDir, PrintStream log, boolean onlyNew) {
@@ -102,7 +102,8 @@ public class OlxImportService {
             try {
                 for (Announcement a : unsent) {
                     try {
-                        TelegramNotificationService.sendNewAnnouncement(a);
+                        TelegramNotificationService telegramNotificationService = TelegramNotificationService.getTelegramNotificationService(log);
+                        telegramNotificationService.sendNewAnnouncement(a);
                         ProjectDatabaseService.markAsSentToTelegram(a.getId());
                         sent++;
                         Thread.sleep(3_500);
@@ -111,11 +112,11 @@ public class OlxImportService {
                         break;
                     } catch (Exception e) {
                         tgFailed++;
-                        System.err.printf("❌ [Telegram] ID=%s: %s%n", a.getId(), e.getMessage());
+                        log.printf("❌ [Telegram] ID=%s: %s%n", a.getId(), e.getMessage());
                     }
                 }
             } finally {
-                System.out.printf("📨 [Telegram] Відправлено: %d | Помилок: %d%n", sent, tgFailed);
+                log.printf("📨 [Telegram] Відправлено: %d | Помилок: %d%n", sent, tgFailed);
                 // Після завершення надсилання (успішного чи збійного) маркуємо процес публікації як TRUE
                 OlxStorageService.updateStateStatus(currentDownloadState, true);
             }

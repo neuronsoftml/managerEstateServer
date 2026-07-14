@@ -1,5 +1,6 @@
 package core.telegram.main;
 
+import controllers.telegram.ProfileWizardController;
 import model.Announcement;
 import model.CategoryLocation;
 import model.City;
@@ -21,6 +22,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKe
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import sqlite.ProjectDatabaseService;
 
+import java.io.PrintStream;
 import java.util.*;
 
 /**
@@ -32,6 +34,23 @@ public class PrivateMainBot extends TelegramLongPollingBot {
 
     /** Мапа для збереження індивідуальних сесій користувачів (ChatID -> Сесія) */
     private final Map<Long, UserSession> userSessions = new HashMap<>();
+
+    /** Контролер Wizard-опитувальника анкети пошуку житла. */
+    private final ProfileWizardController profileWizard = new ProfileWizardController(this);
+
+
+    /** Потік виведення для логування, налагодження або перенаправлення системних повідомлень бота. */
+    private PrintStream botOut;
+
+    /**
+     * Конструктор бота з можливістю впровадження (ін'єкції) кастомного потоку виведення.
+     * Використовується для гнучкого керування логами (наприклад, виведення в консоль, файл або кастомну панель).
+     *
+     * @param botOut потік для відправки технічних та налагоджувальних даних бота
+     */
+    public PrivateMainBot(PrintStream botOut) {
+        this.botOut = botOut;
+    }
 
     @Override
     public String getBotUsername() { return Config.NAME.getKey(); }
@@ -45,6 +64,29 @@ public class PrivateMainBot extends TelegramLongPollingBot {
      */
     @Override
     public void onUpdateReceived(Update update) {
+        // === I. ПЕРЕХОПЛЕННЯ АВТОМАТИЧНОГО ФОРВАРДУ ДЛЯ КОМЕНТАРІВ ===
+        // Перевіряємо повідомлення як у звичайних повідомленнях, так і в channel_posts
+        org.telegram.telegrambots.meta.api.objects.Message msg = null;
+        if (update.hasMessage()) {
+            msg = update.getMessage();
+        } else if (update.hasChannelPost()) {
+            msg = update.getChannelPost();
+        }
+
+        if (msg != null) {
+            // Перевіряємо автоматичний репост із каналу
+            if (msg.getForwardFromChat() != null && msg.getForwardFromChat().isChannelChat()) {
+                Integer channelMessageId = msg.getForwardFromMessageId();
+                Integer discussionMessageId = msg.getMessageId();
+
+                if (channelMessageId != null && discussionMessageId != null) {
+                    ChannelDiscussionRegistry.registerMapping(channelMessageId, discussionMessageId);
+                    botOut.println("✅ Зв'язок створено через БОТА: Пост " + channelMessageId + " -> Дискусія " + discussionMessageId);
+                    return; // Зупиняємо подальшу логіку
+                }
+            }
+        }
+
         // 1. Обробка текстових повідомлень від користувача
         if (update.hasMessage() && update.getMessage().hasText()) {
             String text = update.getMessage().getText();
@@ -58,6 +100,21 @@ public class PrivateMainBot extends TelegramLongPollingBot {
 
             if (text.equals("/start")) {
                 startWorkflow(chatId);
+                return;
+            }
+
+            // Маршрутизація вільного тексту до wizard-опитувальника анкети
+            UserSession textSession = userSessions.get(chatId);
+            if (textSession != null && ProfileWizardController.isWizardState(textSession.getState())) {
+                try {
+                    boolean consumed = profileWizard.handleText(chatId, text, textSession);
+                    if (consumed) {
+                        // Прибираємо повідомлення користувача, щоб чат лишався охайним
+                        deleteMessage(chatId, update.getMessage().getMessageId());
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
         }
         // 2. Обробка натискань на кнопки (CallbackQuery)
@@ -287,6 +344,12 @@ public class PrivateMainBot extends TelegramLongPollingBot {
                 }
             }
 
+            // Якщо кнопка стосується wizard-опитувальника анкети — делегуємо туди
+            if (ProfileWizardController.isWizardCallback(data)) {
+                profileWizard.handleCallback(chatId, messageId, data, session);
+                return;
+            }
+
             // Якщо кнопка була з Головного Меню, зупиняємо виконання
             if (handlerButtonMenu(data, session, chatId, messageId)) {
                 return;
@@ -322,7 +385,11 @@ public class PrivateMainBot extends TelegramLongPollingBot {
             return true;
         }
         else if (data.equals("MENU_CREATE_PROFILE")) {
-            handlerFutureCreateProfile(chatId, messageId);
+            try {
+                profileWizard.startWizard(chatId, messageId, session);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
             return true;
         }
         return false;
@@ -802,7 +869,7 @@ public class PrivateMainBot extends TelegramLongPollingBot {
         } catch (Exception e) {
             // Іноді повідомлення не вдається видалити (наприклад, якщо воно старше за 48 годин),
             // тому просто ігноруємо помилку, щоб бот не падав.
-            System.err.println("Не вдалося видалити повідомлення: " + e.getMessage());
+            botOut.println("Не вдалося видалити повідомлення: " + e.getMessage());
         }
     }
 }

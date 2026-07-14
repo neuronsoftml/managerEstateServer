@@ -40,7 +40,7 @@ public class TelegramController {
                 botOut.println("🤖 Ініціалізація інтерактивного PrivateFilterBot...");
                 TelegramBotsApi botsApi = new TelegramBotsApi(DefaultBotSession.class);
 
-                PrivateMainBot privateBot = new PrivateMainBot();
+                PrivateMainBot privateBot = new PrivateMainBot(botOut);
                 botsApi.registerBot(privateBot);
 
                 botOut.println("✅ PrivateFilterBot успішно запущено і він слухає приватні чати!");

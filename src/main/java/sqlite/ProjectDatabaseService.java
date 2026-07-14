@@ -1,4 +1,5 @@
 package sqlite;
+import core.telegram.model.TenantApplicationForm;
 import core.tools.PrivatBankRateService;
 import model.Announcement;
 import model.CategoryLocation;
@@ -89,6 +90,43 @@ public class ProjectDatabaseService {
                 )
             """);
 
+
+            //TODO Таблиця анкет "шукаю житло" (wizard-опитувальник)
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    telegram_id             INTEGER PRIMARY KEY,
+                    user_name               TEXT NOT NULL DEFAULT '',
+                    phone_number            TEXT NOT NULL DEFAULT '',
+                    budget                  INTEGER NOT NULL,
+                    ready_for_deposit       BOOLEAN NOT NULL,
+                    ready_for_commission    BOOLEAN NOT NULL,
+                    preferred_districts     TEXT NOT NULL,
+                    rooms_type              TEXT NOT NULL,
+                    rent_term               TEXT NOT NULL,
+                    tenants_count           INTEGER NOT NULL,
+                    tenants_description     TEXT NOT NULL,
+                    has_children            BOOLEAN NOT NULL,
+                    children_info           TEXT,
+                    has_pets                BOOLEAN NOT NULL,
+                    pets_info               TEXT,
+                    employment_sphere       TEXT NOT NULL,
+                    work_format             TEXT NOT NULL,
+                    smoking_status          TEXT NOT NULL,
+                    has_car                 BOOLEAN NOT NULL,
+                    critical_requirements   TEXT,
+                    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """);
+
+            // Міграція: якщо таблиця user_profiles вже існувала з попередньої версії
+            // (без user_name/phone_number) — додаємо колонки. ALTER ігнорується через
+            // try-catch, якщо колонка вже є (той самий підхід, що й для sent_to_telegram вище).
+            try {
+                stmt.execute("ALTER TABLE user_profiles ADD COLUMN user_name TEXT NOT NULL DEFAULT ''");
+            } catch (SQLException ignored) { /* колонка вже існує */ }
+            try {
+                stmt.execute("ALTER TABLE user_profiles ADD COLUMN phone_number TEXT NOT NULL DEFAULT ''");
+            } catch (SQLException ignored) { /* колонка вже існує */ }
 
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_olx_city          ON olx_announcements(city)");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_olx_category      ON olx_announcements(category)");
@@ -257,6 +295,56 @@ public class ProjectDatabaseService {
             System.err.println("❌ getUnsentAnnouncements: " + e.getMessage());
         }
         return list;
+    }
+
+    // ── МЕТОДИ ДЛЯ ТАБЛИЦІ user_profiles (Wizard-анкети) ──────────────────────
+
+    /**
+     * Зберігає (або повністю перезаписує, якщо анкета з таким telegram_id вже є)
+     * анкету пошуку житла. Один користувач Telegram може мати лише одну активну
+     * анкету, тому тут навмисно INSERT OR REPLACE, а не INSERT OR IGNORE.
+     */
+    public static boolean saveOrUpdateProfile(TenantApplicationForm form) {
+        String sql = """
+            INSERT OR REPLACE INTO user_profiles
+                (telegram_id, user_name, phone_number, budget, ready_for_deposit, ready_for_commission,
+                 preferred_districts, rooms_type, rent_term, tenants_count,
+                 tenants_description, has_children, children_info, has_pets,
+                 pets_info, employment_sphere, work_format, smoking_status,
+                 has_car, critical_requirements)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """;
+
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setLong   (1,  form.getTelegramId());
+            ps.setString (2,  form.getUserName());
+            ps.setString (3,  form.getPhoneNumber());
+            ps.setInt    (4,  form.getBudget());
+            ps.setBoolean(5,  form.isReadyForDeposit());
+            ps.setBoolean(6,  form.isReadyForCommission());
+            ps.setString (7,  form.getPreferredDistricts());
+            ps.setString (8,  form.getRoomsType());
+            ps.setString (9,  form.getRentTerm());
+            ps.setInt    (10, form.getTenantsCount());
+            ps.setString (11, form.getTenantsDescription());
+            ps.setBoolean(12, form.isHasChildren());
+            ps.setString (13, form.getChildrenInfo());
+            ps.setBoolean(14, form.isHasPets());
+            ps.setString (15, form.getPetsInfo());
+            ps.setString (16, form.getEmploymentSphere());
+            ps.setString (17, form.getWorkFormat());
+            ps.setString (18, form.getSmokingStatus());
+            ps.setBoolean(19, form.isHasCar());
+            ps.setString (20, form.getCriticalRequirements());
+
+            return ps.executeUpdate() > 0;
+
+        } catch (SQLException e) {
+            System.err.println("❌ Помилка збереження анкети telegram_id=" + form.getTelegramId() + ": " + e.getMessage());
+            return false;
+        }
     }
 
     // ── Перевірка існування ───────────────────────────────────────────────────

@@ -4,6 +4,8 @@ import java.time.LocalDateTime;
 
 public class TenantApplicationForm {
     private long telegramId;
+    private String userName;
+    private String phoneNumber;
     private int budget;
     private boolean readyForDeposit;
     private boolean readyForCommission;
@@ -55,6 +57,12 @@ public class TenantApplicationForm {
     // Геттери та Сеттери
     public long getTelegramId() { return telegramId; }
     public void setTelegramId(long telegramId) { this.telegramId = telegramId; }
+
+    public String getUserName() { return userName; }
+    public void setUserName(String userName) { this.userName = userName; }
+
+    public String getPhoneNumber() { return phoneNumber; }
+    public void setPhoneNumber(String phoneNumber) { this.phoneNumber = phoneNumber; }
 
     public int getBudget() { return budget; }
     public void setBudget(int budget) { this.budget = budget; }
@@ -115,6 +123,8 @@ public class TenantApplicationForm {
     public String toString() {
         return "TenantApplicationForm{" +
                 "telegramId=" + telegramId +
+                ", userName='" + userName + '\'' +
+                ", phoneNumber='" + phoneNumber + '\'' +
                 ", budget=" + budget +
                 ", readyForDeposit=" + readyForDeposit +
                 ", readyForCommission=" + readyForCommission +
