@@ -1,52 +1,104 @@
 package core.telegram.model;
 
-import model.CategoryLocation;
+import model.AnnouncementCategory;
 import model.City;
+import model.DealType;
+import model.PropertyType;
 
 import java.util.LinkedHashSet;
 import java.util.Set;
 
+
+/**
+ * Клас-контейнер для збереження поточної сесії користувача в Telegram-боті.
+ * <p>
+ * Дозволяє боту зберігати стан діалогу (FSM), налаштовані фільтри пошуку нерухомості
+ * (місто, категорія, ціновий діапазон, кількість кімнат), а також проміжний стан
+ * заповнення інтерактивної анкети пошуку житла (Wizard-опитувальника).
+ * </p>
+ * <p>
+ * Сесія є тимчасовою та зазвичай зберігається у потокобезпечній мапі (наприклад, {@code ConcurrentHashMap})
+ * у пам'яті сервера, де ключем виступає унікальний Telegram {@code chatId} користувача.
+ * </p>
+ * * @author Mykola
+ */
 public class UserSession {
+
+    /** Поточний стан діалогу користувача (скінченний автомат) */
     private BotState state;
+
+    /** Обране місто для пошуку нерухомості */
     private City selectedCity;
-    private CategoryLocation selectedCategory;
-    private int currentOffset = 0; // Для пагінації (0, 3, 6, 9...)
 
-    // 🆕 Нові поля для додаткової фільтрації
-    private Integer selectedRooms; // null - будь-яка кількість, або 1, 2, 3
-    private Integer minPriceUsd;   // мінімальна ціна діапазону в $
-    private Integer maxPriceUsd;   // максимальна ціна діапазону в $
+    /** Обрана категорія оголошення на OLX */
+    private AnnouncementCategory selectedCategory;
 
-    // ── 🆕 Поля для Wizard-опитувальника "Анкета пошуку житла" ────────────────
+    /** Поточний зсув (індекс пагінації) для відображення списку оголошень порціями (наприклад, 0, 3, 6...) */
+    private int currentOffset = 0;
 
-    /** Чернетка анкети, яка поступово заповнюється протягом усього wizard'а. */
+    // ── Додаткові фільтри пошуку ─────────────────────────────────────────────
+
+    /** Обрана кількість кімнат: {@code null} — будь-яка кількість, або точне значення (1, 2, 3) */
+    private Integer selectedRooms;
+
+    /** * Прапорець логіки вибору кімнат:
+     * {@code true} — якщо вибраний критерій означає "від N і більше" (наприклад, для опції "3+ кімнати"),
+     * {@code false} — для точного збігу за кількістю кімнат.
+     */
+    private boolean roomsIsMinimum = false;
+
+    /** Мінімальна ціна бажаного діапазону в доларах ($) */
+    private Integer minPriceUsd;
+
+    /** Максимальна ціна бажаного діапазону в доларах ($) */
+    private Integer maxPriceUsd;
+
+    // ── Покращена навігація пошуку ───────────────────────────────────────────
+
+    /** Обраний тип угоди (Оренда чи Купівля) */
+    private DealType selectedDealType;
+
+    /** Обраний тип об'єкта нерухомості (Квартира, Будинок, Комерція, Ділянка) */
+    private PropertyType selectedPropertyType;
+
+    // ── Секція Wizard-опитувальника "Анкета пошуку житла" ─────────────────────
+
+    /** Чернетка анкети, яка крок за кроком наповнюється під час проходження опитування */
     private TenantApplicationForm profileDraft = new TenantApplicationForm();
 
-    /** Обрані райони (мультиселект) — накопичуються до натискання "Зберегти вибір". */
+    /** * Набір обраних районів міста (мультиселект).
+     * Використовується {@link LinkedHashSet} для збереження порядку вибору без дублікатів.
+     * Накопичується доти, доки користувач не натисне кнопку "Зберегти вибір".
+     */
     private Set<String> selectedDistricts = new LinkedHashSet<>();
 
-    /** ID останнього повідомлення бота з wizard-екраном (щоб знати, що редагувати). */
+    /** ID останнього надісланого ботом повідомлення з інтерактивним екраном анкети (для inline-редагування) */
     private int wizardMessageId;
 
     /**
-     * true — якщо зараз бот очікує текст-уточнення "вік/кількість дітей"
-     * після відповіді "Так" на кроці PROFILE_WAITING_CHILDREN.
+     * Статус очікування текстового уточнення "вік/кількість дітей".
+     * Стає {@code true}, якщо користувач натиснув кнопку "Так" на кроці {@code PROFILE_WAITING_CHILDREN}.
      */
     private boolean awaitingChildrenDetails = false;
 
     /**
-     * true — якщо зараз бот очікує текст-уточнення про тварину
-     * після відповіді "Так" на кроці PROFILE_WAITING_PETS.
+     * Статус очікування текстового уточнення деталей про тварин.
+     * Стає {@code true}, якщо користувач натиснув кнопку "Так" на кроці {@code PROFILE_WAITING_PETS}.
      */
     private boolean awaitingPetsDetails = false;
 
     /**
-     * true — якщо користувач потрапив на цей крок через "✏️ Редагувати дані"
-     * з екрану підтвердження. У такому разі після відповіді на крок
-     * потрібно повернутись одразу на екран підтвердження, а не йти далі по wizard'у.
+     * Статус режиму швидкого редагування анкети.
+     * {@code true} — якщо користувач повернувся до цього кроку з фінального екрану підтвердження даних.
+     * Після відповіді на це питання бот одразу перенаправляє користувача назад на перевірку анкети.
      */
     private boolean profileEditMode = false;
 
+    /**
+     * Конструктор для ініціалізації нової сесії з певним стартовим станом.
+     *
+     * @param state початковий стан сесії користувача
+     */
     public UserSession(BotState state) {
         this.state = state;
     }
@@ -59,39 +111,41 @@ public class UserSession {
     public City getSelectedCity() { return selectedCity; }
     public void setSelectedCity(City selectedCity) { this.selectedCity = selectedCity; }
 
-    public CategoryLocation getSelectedCategory() { return selectedCategory; }
-    public void setSelectedCategory(CategoryLocation selectedCategory) { this.selectedCategory = selectedCategory; }
+    public AnnouncementCategory getSelectedCategory() { return selectedCategory; }
+    public void setSelectedCategory(AnnouncementCategory selectedCategory) { this.selectedCategory = selectedCategory; }
 
     public int getCurrentOffset() { return currentOffset; }
     public void setCurrentOffset(int currentOffset) { this.currentOffset = currentOffset; }
 
-    // ── 🆕 Геттери та Сеттери для нових фільтрів кімнат та цін ───────────────
+    // ── Геттери та Сеттери для додаткових фільтрів кімнат та цін ──────────────
 
-    public Integer getSelectedRooms() {
-        return selectedRooms;
-    }
+    public Integer getSelectedRooms() { return selectedRooms; }
+    public void setSelectedRooms(Integer selectedRooms) { this.selectedRooms = selectedRooms; }
 
-    public void setSelectedRooms(Integer selectedRooms) {
-        this.selectedRooms = selectedRooms;
-    }
+    public boolean isRoomsIsMinimum() { return roomsIsMinimum; }
+    public void setRoomsIsMinimum(boolean roomsIsMinimum) { this.roomsIsMinimum = roomsIsMinimum; }
 
-    public Integer getMinPriceUsd() {
-        return minPriceUsd;
-    }
+    public DealType getSelectedDealType() { return selectedDealType; }
+    public void setSelectedDealType(DealType selectedDealType) { this.selectedDealType = selectedDealType; }
 
-    public Integer getMaxPriceUsd() {
-        return maxPriceUsd;
-    }
+    public PropertyType getSelectedPropertyType() { return selectedPropertyType; }
+    public void setSelectedPropertyType(PropertyType selectedPropertyType) { this.selectedPropertyType = selectedPropertyType; }
+
+    public Integer getMinPriceUsd() { return minPriceUsd; }
+    public Integer getMaxPriceUsd() { return maxPriceUsd; }
 
     /**
-     * Зручний метод для встановлення меж доларового бюджету одним викликом.
+     * Допоміжний метод для швидкого встановлення меж цінового діапазону в доларах одним викликом.
+     *
+     * @param minPriceUsd нижня границя бюджету
+     * @param maxPriceUsd верхня границя бюджету
      */
     public void setPriceRangeUsd(Integer minPriceUsd, Integer maxPriceUsd) {
         this.minPriceUsd = minPriceUsd;
         this.maxPriceUsd = maxPriceUsd;
     }
 
-    // ── 🆕 Геттери та Сеттери для Wizard-опитувальника ────────────────────────
+    // ── Геттери та Сеттери для Wizard-опитувальника ──────────────────────────
 
     public TenantApplicationForm getProfileDraft() { return profileDraft; }
     public void setProfileDraft(TenantApplicationForm profileDraft) { this.profileDraft = profileDraft; }

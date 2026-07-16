@@ -2,10 +2,10 @@ package sqlite;
 import core.telegram.model.TenantApplicationForm;
 import core.tools.PrivatBankRateService;
 import model.Announcement;
-import model.CategoryLocation;
+import model.AnnouncementCategory;
 import model.City;
 import core.telegram.model.UserSession;
-import core.telegram.model.agent.TelegramGroup;
+
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -17,12 +17,39 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Головний сервіс доступу до даних (DAO) для роботи з локальною базою даних SQLite.
+ * <p>
+ * Відповідає за ініціалізацію схем таблиць, міграцію структури бази даних при оновленні додатку,
+ * збереження оголошень (зв'язаних фото та параметрів) за допомогою транзакцій, роботу з чернетками анкет
+ * користувачів (Wizard-опитувальник) та керування списком моніторингу Telegram-груп.
+ * </p>
+ * <p>
+ * Ключові особливості реалізації:
+ * <ul>
+ * <li>Оптимізація запису великої кількості пов'язаних сутностей через {@code Batch Processing}.</li>
+ * <li>Автоматична міграція колонок "on-the-fly" без руйнування існуючих даних.</li>
+ * <li>Використання {@code INSERT OR IGNORE} та {@code CHANGES()} для уникнення затирання статусу відправки в Telegram.</li>
+ * </ul>
+ * </p>
+ * * @author Mykola
+ */
 public class ProjectDatabaseService {
 
+    /**
+     * Ініціалізує структуру бази даних SQLite: створює необхідні таблиці та індекси, якщо вони не існують.
+     * <p>
+     * Метод також містить блоки міграцій для безпечного додавання нових колонок у таблиці
+     * {@code olx_announcements} та {@code user_profiles} у разі оновлення схеми на «живій» базі даних.
+     * </p>
+     *
+     * @throws RuntimeException якщо виникає критична помилка під час виконання SQL-запитів
+     */
     public static void initTables() {
         try (Connection conn = DatabaseManager.getConnection();
              Statement stmt = conn.createStatement()) {
 
+            // 1. Таблиця оголошень OLX
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS olx_announcements (
                     id                  TEXT PRIMARY KEY,
@@ -45,19 +72,18 @@ public class ProjectDatabaseService {
                 )
             """);
 
-            //TODO Потім треба буде видалити
-            // ── Міграція: додаємо колонку якщо таблиця вже існує без неї ────────
-            // ALTER TABLE ігнорується якщо колонка вже є через try-catch
+            // ── МІГРАЦІЯ: Додавання колонки sent_to_telegram ──────────────────
+            // try-catch запобігає падінню ініціалізації, якщо колонка вже була створена раніше
             try {
                 stmt.execute(
                         "ALTER TABLE olx_announcements ADD COLUMN sent_to_telegram INTEGER DEFAULT 0"
                 );
                 System.out.println("✅ [SQLite] Міграція: колонка sent_to_telegram додана.");
             } catch (SQLException ignored) {
-                // Колонка вже існує — це нормально, ігноруємо
+                // Колонка вже існує — ігноруємо помилку
             }
 
-            //TODO Відповідає за спісок груп телеграм для мотітору
+            // 2. Таблиця моніторингу груп Telegram
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS monitored_groups_telegram (
                     id                          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +94,7 @@ public class ProjectDatabaseService {
                 )
             """);
 
-
+            // 3. Таблиця фотографій оголошень (Зв'язок 1:N з каскадним видаленням)
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS olx_photos (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +106,7 @@ public class ProjectDatabaseService {
                 )
             """);
 
+            // 4. Таблиця параметрів оголошень (Зв'язок 1:N з каскадним видаленням)
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS olx_params (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,8 +117,7 @@ public class ProjectDatabaseService {
                 )
             """);
 
-
-            //TODO Таблиця анкет "шукаю житло" (wizard-опитувальник)
+            // 5. Таблиця профілів/анкет користувачів (Wizard-опитувальник "Шукаю житло")
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     telegram_id             INTEGER PRIMARY KEY,
@@ -118,9 +144,7 @@ public class ProjectDatabaseService {
                 )
             """);
 
-            // Міграція: якщо таблиця user_profiles вже існувала з попередньої версії
-            // (без user_name/phone_number) — додаємо колонки. ALTER ігнорується через
-            // try-catch, якщо колонка вже є (той самий підхід, що й для sent_to_telegram вище).
+            // ── МІГРАЦІЯ: Додавання нових колонок у профілі користувачів ──────
             try {
                 stmt.execute("ALTER TABLE user_profiles ADD COLUMN user_name TEXT NOT NULL DEFAULT ''");
             } catch (SQLException ignored) { /* колонка вже існує */ }
@@ -128,6 +152,7 @@ public class ProjectDatabaseService {
                 stmt.execute("ALTER TABLE user_profiles ADD COLUMN phone_number TEXT NOT NULL DEFAULT ''");
             } catch (SQLException ignored) { /* колонка вже існує */ }
 
+            // 6. Створення індексів для оптимізації вибірок за основними фільтрами пошуку
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_olx_city          ON olx_announcements(city)");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_olx_category      ON olx_announcements(category)");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_olx_price         ON olx_announcements(price_value)");
@@ -139,11 +164,21 @@ public class ProjectDatabaseService {
         }
     }
 
-    // ── Запис оголошення ──────────────────────────────────────────────────────
+    // ── РОБОТА З ОГОЛОШЕННЯМИ ─────────────────────────────────────────────────
 
+    /**
+     * Зберігає оголошення в базі даних у межах однієї транзакції.
+     * <p>
+     * Використовує механізм {@code INSERT OR IGNORE}, щоб не перезаписувати існуючі оголошення
+     * й не занулювати статус надсилання в Telegram ({@code sent_to_telegram = 0}).
+     * Додаткові дані (фото та параметри) записуються лише тоді, коли запис дійсно новий
+     * (перевіряється функцією {@code changes()}).
+     * </p>
+     *
+     * @param a об'єкт оголошення {@link Announcement}
+     * @return {@code true}, якщо запит виконано без помилок, інакше {@code false}
+     */
     public static boolean saveAnnouncement(Announcement a) {
-        // INSERT OR IGNORE — якщо ID вже є, НЕ перезаписуємо
-        // (щоб не скидати sent_to_telegram = 0 у вже відправлених)
         String sql = """
             INSERT OR IGNORE INTO olx_announcements
                 (id, city, category, url, title, price_value, price_currency,
@@ -153,6 +188,7 @@ public class ProjectDatabaseService {
         """;
 
         try (Connection conn = DatabaseManager.getConnection()) {
+            // Вмикаємо ручне керування транзакцією
             conn.setAutoCommit(false);
 
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -161,9 +197,14 @@ public class ProjectDatabaseService {
                 ps.setString(3,  a.getCategory() != null ? a.getCategory().getLabel() : "");
                 ps.setString(4,  a.getUrl());
                 ps.setString(5,  a.getTitle());
+
                 BigDecimal pv = a.getPriceValue();
-                if (pv != null) ps.setDouble(6, pv.doubleValue());
-                else            ps.setNull(6, Types.REAL);
+                if (pv != null) {
+                    ps.setDouble(6, pv.doubleValue());
+                } else {
+                    ps.setNull(6, Types.REAL);
+                }
+
                 ps.setString(7,  a.getPriceCurrency());
                 ps.setString(8,  a.getLocation());
                 ps.setString(9,  a.getDatePublished());
@@ -176,8 +217,8 @@ public class ProjectDatabaseService {
                 ps.executeUpdate();
             }
 
-            // Фото і параметри — тільки якщо запис новий (INSERT OR IGNORE)
-            // Перевіряємо через changes()
+            // Додаткові сутності (фото та параметри) пишемо тільки тоді, коли рядок дійсно вставився.
+            // Функція changes() у SQLite повертає кількість рядків, змінених останнім запитом.
             try (Statement st = conn.createStatement();
                  ResultSet rs = st.executeQuery("SELECT changes()")) {
                 if (rs.next() && rs.getInt(1) > 0) {
@@ -186,7 +227,7 @@ public class ProjectDatabaseService {
                 }
             }
 
-            conn.commit();
+            conn.commit(); // Фіксуємо транзакцію
             return true;
 
         } catch (SQLException e) {
@@ -195,22 +236,30 @@ public class ProjectDatabaseService {
         }
     }
 
+    /**
+     * Пакетно зберігає список URL фотографій для конкретного оголошення.
+     */
     private static void savePhotos(Announcement a, Connection conn) throws SQLException {
         if (a.getPhotos() == null || a.getPhotos().isEmpty()) return;
+
         try (PreparedStatement ps = conn.prepareStatement(
                 "INSERT INTO olx_photos (announcement_id, photo_url, sort_order) VALUES (?,?,?)")) {
             for (int i = 0; i < a.getPhotos().size(); i++) {
                 ps.setString(1, a.getId());
                 ps.setString(2, a.getPhotos().get(i));
                 ps.setInt   (3, i);
-                ps.addBatch();
+                ps.addBatch(); // Додаємо в пакет
             }
-            ps.executeBatch();
+            ps.executeBatch(); // Виконуємо пакетно
         }
     }
 
+    /**
+     * Пакетно зберігає текстові параметри (характеристики) для конкретного оголошення.
+     */
     private static void saveParams(Announcement a, Connection conn) throws SQLException {
         if (a.getParams() == null || a.getParams().isEmpty()) return;
+
         try (PreparedStatement ps = conn.prepareStatement(
                 "INSERT INTO olx_params (announcement_id, param_text) VALUES (?,?)")) {
             for (String param : a.getParams()) {
@@ -222,11 +271,13 @@ public class ProjectDatabaseService {
         }
     }
 
-    // ── Telegram статус ───────────────────────────────────────────────────────
+    // ── TELEGRAM СТАТУСИ ТА ВІДПРАВКА ─────────────────────────────────────────
 
     /**
-     * Позначає оголошення як відправлене в Telegram.
-     * Викликати тільки після успішної відправки.
+     * Позначає оголошення як відправлене у Telegram-канал (встановлює флаг {@code sent_to_telegram = 1}).
+     * Викликається лише після підтвердження успішної відправки через Telegram API.
+     *
+     * @param id унікальний ідентифікатор оголошення OLX
      */
     public static void markAsSentToTelegram(String id) {
         try (Connection conn = DatabaseManager.getConnection();
@@ -240,8 +291,10 @@ public class ProjectDatabaseService {
     }
 
     /**
-     * Повертає всі оголошення які ще не були відправлені в Telegram.
-     * Використовується при старті програми для дозакидання пропущених.
+     * Повертає список оголошень, які ще не були опубліковані у Telegram-каналі.
+     * Використовується демоном розсилки для відправки накопичених нових записів.
+     *
+     * @return список невідправлених об'єктів {@link Announcement}, відсортованих від старіших до новіших
      */
     public static List<Announcement> getUnsentAnnouncements() {
         List<Announcement> list = new ArrayList<>();
@@ -263,29 +316,39 @@ public class ProjectDatabaseService {
                 String cityStr  = rs.getString("city");
                 String catStr   = rs.getString("category");
 
-                // Зворотний маппінг рядків → enum
+                // Зворотний мапінг рядків з БД у відповідні Enum об'єкти системи
                 City city = City.CHERNIVTSI;
                 for (City c : City.values()) {
-                    if (c.getLabel().equalsIgnoreCase(cityStr)) { city = c; break; }
+                    if (c.getLabel().equalsIgnoreCase(cityStr)) {
+                        city = c;
+                        break;
+                    }
                 }
-                CategoryLocation cat = CategoryLocation.RENT_LONG;
-                for (CategoryLocation cl : CategoryLocation.values()) {
-                    if (cl.getLabel().equalsIgnoreCase(catStr)) { cat = cl; break; }
+
+                AnnouncementCategory cat = AnnouncementCategory.RENT_LONG;
+                for (AnnouncementCategory cl : AnnouncementCategory.values()) {
+                    if (cl.getLabel().equalsIgnoreCase(catStr)) {
+                        cat = cl;
+                        break;
+                    }
                 }
 
                 Announcement ad = new Announcement(
                         id, rs.getString("url"), rs.getString("title"),
                         "", rs.getString("location"), city, cat
                 );
+
                 double pv = rs.getDouble("price_value");
-                if (!rs.wasNull()) ad.setPriceValue(BigDecimal.valueOf(pv));
+                if (!rs.wasNull()) {
+                    ad.setPriceValue(BigDecimal.valueOf(pv));
+                }
                 ad.setPriceCurrency(rs.getString("price_currency"));
                 ad.setDatePublished(rs.getString("date_published"));
                 ad.setSeller(rs.getString("seller"));
                 ad.setPhone(rs.getString("phone"));
                 ad.setDescription(rs.getString("description"));
 
-                // Завантажуємо фото і параметри
+                // Завантаження пов'язаних колекцій
                 ad.setPhotos(getPhotosForAnnouncement(id, conn));
                 ad.setParams(getParamsForAnnouncement(id, conn));
 
@@ -297,12 +360,17 @@ public class ProjectDatabaseService {
         return list;
     }
 
-    // ── МЕТОДИ ДЛЯ ТАБЛИЦІ user_profiles (Wizard-анкети) ──────────────────────
+    // ── РОБОТА З ПРОФІЛЯМИ КОРИСТУВАЧІВ (WIZARD-АНКЕТИ) ───────────────────────
 
     /**
-     * Зберігає (або повністю перезаписує, якщо анкета з таким telegram_id вже є)
-     * анкету пошуку житла. Один користувач Telegram може мати лише одну активну
-     * анкету, тому тут навмисно INSERT OR REPLACE, а не INSERT OR IGNORE.
+     * Зберігає або повністю перезаписує анкету клієнта на пошук нерухомості.
+     * <p>
+     * Оскільки один користувач може мати лише одну активну анкету, використовується конструкція
+     * {@code INSERT OR REPLACE} на базі унікального {@code telegram_id} (первинний ключ).
+     * </p>
+     *
+     * @param form заповнений об'єкт анкети {@link TenantApplicationForm}
+     * @return {@code true}, якщо запис пройшов успішно, інакше {@code false}
      */
     public static boolean saveOrUpdateProfile(TenantApplicationForm form) {
         String sql = """
@@ -347,8 +415,14 @@ public class ProjectDatabaseService {
         }
     }
 
-    // ── Перевірка існування ───────────────────────────────────────────────────
+    // ── СТАТИСТИКА ТА ПЕРЕВІРКА ІСНУВАННЯ ─────────────────────────────────────
 
+    /**
+     * Перевіряє наявність оголошення в локальній базі за його ID.
+     *
+     * @param id унікальний ідентифікатор оголошення (наприклад, "841234123")
+     * @return {@code true}, якщо оголошення вже є в базі, інакше {@code false}
+     */
     public static boolean exists(String id) {
         try (Connection conn = DatabaseManager.getConnection();
              PreparedStatement ps = conn.prepareStatement(
@@ -360,6 +434,11 @@ public class ProjectDatabaseService {
         }
     }
 
+    /**
+     * Повертає загальну кількість оголошень, збережених у системі.
+     *
+     * @return загальна кількість записів, або {@code -1} у разі помилки
+     */
     public static int countAll() {
         try (Connection conn = DatabaseManager.getConnection();
              Statement stmt = conn.createStatement();
@@ -370,8 +449,21 @@ public class ProjectDatabaseService {
         }
     }
 
-    // ── Фільтрація для Telegram бота ─────────────────────────────────────────
+    // ── ФІЛЬТРАЦІЯ ДЛЯ ТЕЛЕГРАМ БОТА ─────────────────────────────────────────
 
+    /**
+     * Пошук оголошень за складною системою фільтрації (місто, категорія, кількість кімнат, ціновий діапазон).
+     * <p>
+     * Фільтрація за кімнатами та ціною здійснюється динамічно в оперативній пам'яті:
+     * <ul>
+     * <li>Підтримується фільтр "точний збіг" або "мінімум N кімнат" (для вибору 3+).</li>
+     * <li>Підтримується автоматична конвертація гривневих цін у USD за актуальним курсом ПриватБанку для коректної фільтрації діапазонів.</li>
+     * </ul>
+     * </p>
+     *
+     * @param session поточна активна сесія користувача {@link UserSession} з налаштованими фільтрами
+     * @return список знайдених та відфільтрованих оголошень {@link Announcement}
+     */
     public static List<Announcement> getAnnouncementsByFilter(UserSession session) {
         List<Announcement> results = new ArrayList<>();
         String sql = """
@@ -392,35 +484,47 @@ public class ProjectDatabaseService {
                 while (rs.next()) {
                     String id  = rs.getString("id");
                     City city  = session.getSelectedCity();
-                    CategoryLocation cat = session.getSelectedCategory();
+                    AnnouncementCategory cat = session.getSelectedCategory();
 
                     Announcement ad = new Announcement(
                             id, rs.getString("url"), rs.getString("title"),
                             "", rs.getString("location"), city, cat
                     );
+
                     double pv = rs.getDouble("price_value");
                     String currency = rs.getString("price_currency");
-                    if (!rs.wasNull()) ad.setPriceValue(BigDecimal.valueOf(pv));
+                    if (!rs.wasNull()) {
+                        ad.setPriceValue(BigDecimal.valueOf(pv));
+                    }
                     ad.setPriceCurrency(currency);
                     ad.setDatePublished(rs.getString("date_published"));
                     ad.setSeller(rs.getString("seller"));
                     ad.setPhone(rs.getString("phone"));
                     ad.setDescription(rs.getString("description"));
+
+                    // Завантаження фото та характеристик
                     ad.setPhotos(getPhotosForAnnouncement(id, conn));
                     ad.setParams(getParamsForAnnouncement(id, conn));
 
-                    // Фільтр по кімнатах
-                    if (session.getSelectedRooms() != null &&
-                            ad.getRoomsCount() != session.getSelectedRooms()) continue;
+                    // 1. Фільтр по кімнатах
+                    if (session.getSelectedRooms() != null) {
+                        if (session.isRoomsIsMinimum()) {
+                            if (ad.getRoomsCount() < session.getSelectedRooms()) continue;
+                        } else {
+                            if (ad.getRoomsCount() != session.getSelectedRooms()) continue;
+                        }
+                    }
 
-                    // Фільтр по ціні (конвертація через ПриватБанк)
+                    // 2. Фільтр по бюджету в доларах (з урахуванням конвертації грн -> usd)
                     if (session.getMinPriceUsd() != null && ad.getPriceValue() != null) {
                         int priceUsd;
                         if (currency != null && (currency.equalsIgnoreCase("usd") || currency.equalsIgnoreCase("$"))) {
                             priceUsd = ad.getPriceValue().intValue();
                         } else {
+                            // Конвертуємо гривневу ціну в еквівалент USD через API ПриватБанку
                             priceUsd = PrivatBankRateService.convertUahToUsd(ad.getPriceValue()).intValue();
                         }
+                        // Перевіряємо вхід у задані межі бюджету
                         if (priceUsd < session.getMinPriceUsd() || priceUsd > session.getMaxPriceUsd()) continue;
                     }
 
@@ -433,15 +537,20 @@ public class ProjectDatabaseService {
         return results;
     }
 
-    // ── Приватні хелпери ──────────────────────────────────────────────────────
+    // ── ПРИВАТНІ ДОПОМІЖНІ МЕТОДИ (HELPER METHODS) ───────────────────────────
 
+    /**
+     * Отримує список фотографій для конкретного оголошення.
+     */
     private static List<String> getPhotosForAnnouncement(String id, Connection conn) {
         List<String> photos = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT photo_url FROM olx_photos WHERE announcement_id = ? ORDER BY sort_order ASC")) {
             ps.setString(1, id);
             try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) photos.add(rs.getString("photo_url"));
+                while (rs.next()) {
+                    photos.add(rs.getString("photo_url"));
+                }
             }
         } catch (SQLException e) {
             System.err.println("⚠️ Фото для ID=" + id + ": " + e.getMessage());
@@ -449,13 +558,18 @@ public class ProjectDatabaseService {
         return photos;
     }
 
+    /**
+     * Отримує список текстових параметрів для конкретного оголошення.
+     */
     private static List<String> getParamsForAnnouncement(String id, Connection conn) {
         List<String> params = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT param_text FROM olx_params WHERE announcement_id = ?")) {
             ps.setString(1, id);
             try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) params.add(rs.getString("param_text"));
+                while (rs.next()) {
+                    params.add(rs.getString("param_text"));
+                }
             }
         } catch (SQLException e) {
             System.err.println("⚠️ Параметри для ID=" + id + ": " + e.getMessage());
@@ -463,38 +577,17 @@ public class ProjectDatabaseService {
         return params;
     }
 
-
     // ── МЕТОДИ ДЛЯ ТАБЛИЦІ monitored_groups_telegram ──────────────────────────
 
-    /**
-     * Отримує список усіх активних груп Telegram для фонового сканера.
-     */
-    public static List<TelegramGroup> getActiveMonitoredGroups() {
-        List<TelegramGroup> groups = new ArrayList<>();
-        String sql = "SELECT id, chat_id, group_name, last_processed_message_id, is_active FROM monitored_groups_telegram WHERE is_active = 1";
-
-        try (Connection conn = DatabaseManager.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql);
-             ResultSet rs = ps.executeQuery()) {
-
-            while (rs.next()) {
-                groups.add(new TelegramGroup(
-                        rs.getInt("id"),
-                        rs.getString("chat_id"),
-                        rs.getString("group_name"),
-                        rs.getLong("last_processed_message_id"),
-                        rs.getInt("is_active") == 1
-                ));
-            }
-        } catch (SQLException e) {
-            System.err.println("❌ Помилка зчитування активних груп Telegram: " + e.getMessage());
-        }
-        return groups;
-    }
 
     /**
-     * Оновлює ID останнього обробленого повідомлення у конкретній групі.
-     * Це гарантує, що після перезапуску бот не буде надсилати старі дублікати.
+     * Оновлює ID останнього успішно обробленого повідомлення у конкретній групі.
+     * <p>
+     * Запобігає повторному парсингу та відправці дублікатів повідомлень після перезапуску боту.
+     * </p>
+     *
+     * @param chatId        унікальний ідентифікатор чату групи Telegram
+     * @param lastMessageId унікальний ID останнього повідомлення
      */
     public static void updateGroupLastMessageId(String chatId, long lastMessageId) {
         String sql = "UPDATE monitored_groups_telegram SET last_processed_message_id = ? WHERE chat_id = ?";
@@ -511,8 +604,15 @@ public class ProjectDatabaseService {
     }
 
     /**
-     * Динамічно додає нову Telegram групу/канал на моніторинг.
-     * Якщо група з таким chat_id вже існує, база даних проігнорує запис без помилок (завдяки INSERT OR IGNORE).
+     * Додає нову Telegram групу чи канал до списку моніторингу системи.
+     * <p>
+     * Якщо група з таким {@code chat_id} вже присутня в системі, запис буде проігноровано
+     * завдяки {@code INSERT OR IGNORE}.
+     * </p>
+     *
+     * @param chatId    ідентифікатор чату Telegram (зазвичай починається з мінуса для груп)
+     * @param groupName зрозуміла назва групи/каналу для адміністратора
+     * @return {@code true}, якщо додано новий рядок, або {@code false}, якщо групу проігноровано чи виникла помилка
      */
     public static boolean addGroupToMonitor(String chatId, String groupName) {
         String sql = "INSERT OR IGNORE INTO monitored_groups_telegram (chat_id, group_name) VALUES (?, ?)";

@@ -1,4 +1,4 @@
-package core.tools.olx;
+package core.tools.parser.olx;
 
 import model.Announcement;
 

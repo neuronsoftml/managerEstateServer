@@ -22,23 +22,28 @@ import java.util.regex.Pattern;
 
 /**
  * Контролер Wizard-опитувальника "Анкета пошуку житла".
- *
- * Реалізує покроковий сценарій згідно з ТЗ: збирає дані в UserSession.getProfileDraft()
- * (об'єкт {@link TenantApplicationForm}), а на екрані підтвердження записує їх
- * у таблицю user_profiles через {@link ProjectDatabaseService#saveOrUpdateProfile}.
- *
- * Тримає лише посилання на бота (для execute()) — сам жодного стану не зберігає,
- * увесь стан живе в UserSession, як і в решті проєкту.
+ * <p>
+ * Реалізує покроковий сценарій збору вимог орендаря згідно з ТЗ.
+ * Накопичує дані в сесійному об'єкті {@link TenantApplicationForm} (отримується через {@code UserSession.getProfileDraft()}).
+ * На фінальному екрані підтвердження здійснює персистентний запис або оновлення даних
+ * у таблиці {@code user_profiles} за допомогою {@link ProjectDatabaseService#saveOrUpdateProfile}.
+ * </p>
+ * <p>
+ * Архітектурно контролер є <b>Stateless</b> (без збереження стану). Він тримає лише фінальне посилання
+ * на екземпляр Telegram-бота для виконання мережевих запитів. Увесь стан проходження кроків
+ * та проміжні дані повністю делеговані об'єкту {@link UserSession}.
+ * </p>
  */
 public class ProfileWizardController {
 
+    /** Екземпляр Telegram-бота для надсилання та редагування повідомлень */
     private final TelegramLongPollingBot bot;
 
-    // Список районів для мультиселекту тепер БЕРЕТЬСЯ ДИНАМІЧНО з model.City.values()
-    // (те саме джерело, що й для вибору міста в пошуку оголошень) — жодного
-    // дубльованого хардкод-списку тут більше немає. Якщо додати нове значення
-    // в City, воно автоматично з'явиться і в цьому кроці wizard'а.
-
+    /**
+     * Конструктор контролера опитувальника.
+     *
+     * @param bot інстанс бота, через який виконуються запити до Telegram API
+     */
     public ProfileWizardController(TelegramLongPollingBot bot) {
         this.bot = bot;
     }
@@ -47,7 +52,16 @@ public class ProfileWizardController {
     // --- СТАРТ WIZARD'А ---
     // ==========================================
 
-    /** Викликається з MENU_CREATE_PROFILE. Скидає чернетку і стартує з першого кроку. */
+    /**
+     * Ініціалізує новий сеанс анкетування користувача.
+     * Скидає чернетки попередніх відповідей у сесії, обнуляє тимчасові прапорці
+     * та переводить стан FSM у початковий крок очікування імені.
+     *
+     * @param chatId    ID чату користувача
+     * @param messageId ID повідомлення-тригера (використовується як якір для inline-оновлень)
+     * @param session   поточна сесія користувача
+     * @throws Exception при помилках взаємодії з Telegram API
+     */
     public void startWizard(long chatId, int messageId, UserSession session) throws Exception {
         session.setProfileDraft(new TenantApplicationForm());
         session.getSelectedDistricts().clear();
@@ -63,9 +77,20 @@ public class ProfileWizardController {
     // --- ЦЕНТРАЛЬНИЙ ДИСПЕТЧЕР CALLBACK ---
     // ==========================================
 
+    /**
+     * Головний вхідний порт для обробки натискань на inline-кнопки (CallbackQuery).
+     * Маршрутизує події відповідно до поточної бізнес-логіки кроку.
+     *
+     * @param chatId    ID чату користувача
+     * @param messageId ID повідомлення, в якому відбувся клік
+     * @param data      строкові дані натиснутої кнопки (callback_data)
+     * @param session   поточна сесія користувача
+     * @throws Exception при помилках Telegram API
+     */
     public void handleCallback(long chatId, int messageId, String data, UserSession session) throws Exception {
-        session.setWizardMessageId(messageId); // завжди тримаємо актуальний "якір"
+        session.setWizardMessageId(messageId); // Завжди синхронізуємо актуальний якір для inline-редагування
 
+        // Системні керуючі події опитувальника
         if (data.equals("PROFILE_CANCEL")) {
             cancelWizard(chatId, messageId, session);
             return;
@@ -83,6 +108,8 @@ public class ProfileWizardController {
             saveProfile(chatId, messageId, session);
             return;
         }
+
+        // Перехід до редагування конкретного кроку з екрана підтвердження
         if (data.startsWith("EDIT_STEP_")) {
             BotState target = editStepToState(data.replace("EDIT_STEP_", ""));
             if (target != null) {
@@ -95,6 +122,7 @@ public class ProfileWizardController {
 
         TenantApplicationForm form = session.getProfileDraft();
 
+        // Обробка відповідей користувача на кроках опитування
         if (data.equals("PROFILE_DEPOSIT_YES") || data.equals("PROFILE_DEPOSIT_NO")) {
             form.setReadyForDeposit(data.endsWith("YES"));
             advance(session, chatId, messageId, BotState.PROFILE_WAITING_COMMISSION);
@@ -104,17 +132,19 @@ public class ProfileWizardController {
             advance(session, chatId, messageId, BotState.PROFILE_WAITING_DISTRICTS);
 
         } else if (data.startsWith("PDISTRICT_") && !data.equals("PDISTRICT_DONE")) {
+            // Реалізація логіки мультиселекту районів на базі City.values()
             String cityName = data.replace("PDISTRICT_", "");
             try {
                 City city = City.valueOf(cityName);
                 String label = city.getLabel();
+                // Якщо район вже вибрано — прибираємо його, інакше додаємо в список
                 if (!session.getSelectedDistricts().remove(label)) {
                     session.getSelectedDistricts().add(label);
                 }
             } catch (IllegalArgumentException ignored) {
-                // Невідоме значення City (наприклад, застаріла кнопка старого списку) — ігноруємо
+                // Запобігання помилкам, якщо структура енаму City змінилася
             }
-            renderDistrictsStep(chatId, messageId, session); // перерендерюємо той самий крок
+            renderDistrictsStep(chatId, messageId, session); // Перерендер поточного списку з оновленими галочками
 
         } else if (data.equals("PDISTRICT_DONE")) {
             form.setPreferredDistricts(String.join(", ", session.getSelectedDistricts()));
@@ -129,7 +159,7 @@ public class ProfileWizardController {
             advance(session, chatId, messageId, BotState.PROFILE_WAITING_TENANTS);
 
         } else if (data.equals("PCHILDREN_YES")) {
-            session.setAwaitingChildrenDetails(true);
+            session.setAwaitingChildrenDetails(true); // Встановлюємо прапорець очікування вільного текстового введення
             renderChildrenDetailsPrompt(chatId, messageId);
 
         } else if (data.equals("PCHILDREN_NO")) {
@@ -138,7 +168,7 @@ public class ProfileWizardController {
             advance(session, chatId, messageId, BotState.PROFILE_WAITING_PETS);
 
         } else if (data.equals("PPETS_YES")) {
-            session.setAwaitingPetsDetails(true);
+            session.setAwaitingPetsDetails(true); // Перемикаємо на режим збору текстових подробиць про тварин
             renderPetsDetailsPrompt(chatId, messageId);
 
         } else if (data.equals("PPETS_NO")) {
@@ -173,8 +203,13 @@ public class ProfileWizardController {
     // ==========================================
 
     /**
+     * Головний вхідний порт для обробки текстових відповідей користувача у чаті.
+     *
+     * @param chatId  ID чату користувача
+     * @param text    введений текст повідомлення
+     * @param session сесія користувача з даними про поточний стан
      * @return true, якщо повідомлення було спожите wizard'ом (і його варто видалити
-     *         з чату для охайності), false — якщо цей текст wizard'у не стосується.
+     * з чату для охайності), false — якщо цей текст wizard'у не стосується.
      */
     public boolean handleText(long chatId, String text, UserSession session) throws Exception {
         int msgId = session.getWizardMessageId();
@@ -254,9 +289,10 @@ public class ProfileWizardController {
     // ==========================================
 
     /**
-     * Якщо ми в режимі редагування (прийшли з екрану підтвердження) — після
-     * відповіді одразу повертаємось на підтвердження, а не йдемо по wizard'у далі.
-     * Інакше — звичайний перехід на наступний крок.
+     * Контролює перехід до наступного етапу опитування.
+     * Якщо користувач перебував у режимі редагування конкретного пункту (profileEditMode == true),
+     * то після фіксації відповіді він одразу повертається на фінальний екран підтвердження.
+     * В іншому випадку — виконується стандартний крок вперед по лінійній структурі опитувальника.
      */
     private void advance(UserSession session, long chatId, int messageId, BotState next) throws Exception {
         if (session.isProfileEditMode()) {
@@ -269,6 +305,10 @@ public class ProfileWizardController {
         }
     }
 
+    /**
+     * Центральний маршрутизатор рендерингу кроків. Визначає метод візуалізації
+     * інтерфейсу бота відповідно до заданого стану FSM.
+     */
     private void renderStep(BotState state, long chatId, int messageId, UserSession session) throws Exception {
         switch (state) {
             case PROFILE_WAITING_NAME -> renderNameStep(chatId, messageId, "");
@@ -469,6 +509,9 @@ public class ProfileWizardController {
     // --- ЕКРАН ПІДТВЕРДЖЕННЯ ---
     // ==========================================
 
+    /**
+     * Будує та відображає зведене резюме анкети для фінальної перевірки користувачем.
+     */
     private void renderConfirmation(long chatId, int messageId, UserSession session) throws Exception {
         TenantApplicationForm f = session.getProfileDraft();
 
@@ -516,6 +559,9 @@ public class ProfileWizardController {
         edit(chatId, messageId, sb.toString(), kb);
     }
 
+    /**
+     * Відображає інтерактивну панель вибору пунктів для точкового коригування анкети.
+     */
     private void renderEditMenu(long chatId, int messageId) throws Exception {
         Map<String, String> buttons = new LinkedHashMap<>();
         buttons.put("👤 Ім'я", "EDIT_STEP_NAME");
@@ -548,13 +594,18 @@ public class ProfileWizardController {
     // --- ЗБЕРЕЖЕННЯ ТА СКАСУВАННЯ ---
     // ==========================================
 
+    /**
+     * Завершальний крок анкетування. Зберігає заповнений об'єкт у БД
+     * та очищує кнопки під резюме анкетних даних для запобігання подвійних кліків.
+     */
     private void saveProfile(long chatId, int messageId, UserSession session) throws Exception {
         TenantApplicationForm f = session.getProfileDraft();
         f.setTelegramId(chatId);
 
+        // Спроба зберегти або оновити запис у БД
         boolean ok = ProjectDatabaseService.saveOrUpdateProfile(f);
 
-        // Прибираємо кнопки під резюме
+        // Затираємо inline-клавіатуру під анкетним повідомленням
         EditMessageReplyMarkup clear = new EditMessageReplyMarkup();
         clear.setChatId(String.valueOf(chatId));
         clear.setMessageId(messageId);
@@ -587,6 +638,10 @@ public class ProfileWizardController {
         session.setProfileEditMode(false);
     }
 
+    /**
+     * Повністю перериває опитування користувача. Очищує сесію від чернеток даних
+     * та повертає статус користувача на головне меню.
+     */
     private void cancelWizard(long chatId, int messageId, UserSession session) throws Exception {
         session.setProfileDraft(new TenantApplicationForm());
         session.getSelectedDistricts().clear();
@@ -605,6 +660,9 @@ public class ProfileWizardController {
     // --- ДРІБНІ ХЕЛПЕРИ ---
     // ==========================================
 
+    /**
+     * Скорочений внутрішній обгортковий метод для виконання редагування текстових блоків повідомлень у Telegram.
+     */
     private void edit(long chatId, int messageId, String text, List<List<InlineKeyboardButton>> keyboardRows) throws Exception {
         EditMessageText edit = new EditMessageText();
         edit.setChatId(String.valueOf(chatId));
@@ -629,6 +687,10 @@ public class ProfileWizardController {
         return InlineKeyboardFactory.createRow(new String[][]{{"❌ Скасувати", "PROFILE_CANCEL"}});
     }
 
+    /**
+     * Фільтрує та парсить вхідний рядок, повертаючи позитивне ціле число.
+     * Запобігає крашу програми у випадку некоректного текстового вводу від користувача.
+     */
     private Integer parsePositiveInt(String text) {
         try {
             int val = Integer.parseInt(text.trim().replaceAll("[^0-9]", ""));
@@ -639,9 +701,8 @@ public class ProfileWizardController {
     }
 
     /**
-     * Проста нормалізація/валідація номера телефону: залишає тільки цифри та
-     * ведучий "+", вимагає 9–15 цифр (охоплює як міжнародний, так і локальний формат).
-     * Повертає null, якщо номер явно некоректний (замало/забагато цифр, немає цифр).
+     * Нормалізує номер телефону користувача: видаляє всі нечислові символи за винятком
+     * лідируючого "+". Забезпечує базову перевірку довжини для запобігання завантаженню фейкових даних.
      */
     private String normalizePhone(String text) {
         String trimmed = text.trim();
@@ -652,10 +713,8 @@ public class ProfileWizardController {
     }
 
     /**
-     * Витягує перше число з тексту опису мешканців (наприклад "нас двоє" -> шукаємо цифру,
-     * якщо немає — беремо defaultValue). Це евристика: ТЗ не передбачає окремого
-     * числового кроку для кількості мешканців, лише текстовий опис, а стовпчик
-     * tenants_count у БД обов'язковий (NOT NULL), тож без явного числа підставляємо 1.
+     * Спроба автоматично виділити перше число з довільного опису мешканців.
+     * Якщо число не знайдене в описі, повертається значення за замовчуванням (defaultValue = 1).
      */
     private int extractFirstNumberOrDefault(String text, int defaultValue) {
         Matcher m = Pattern.compile("\\d+").matcher(text);
@@ -697,12 +756,17 @@ public class ProfileWizardController {
         return switch (data) {
             case "PSMOKE_NO" -> "Не палю";
             case "PSMOKE_BALCONY" -> "Палю тільки на балконі";
-            default -> "Палю електронні сигарети/vape";
+            case "PSMOKE_VAPE" -> "Палю електронні сигарети/vape";
+            default -> "Не вказано";
         };
     }
 
-    private BotState editStepToState(String stepKey) {
-        return switch (stepKey) {
+    /**
+     * Перетворює текстовий ідентифікатор поля у відповідний стан FSM бота.
+     * Використовується для переходу на потрібний крок при покроковому редагуванні анкети.
+     */
+    private BotState editStepToState(String suffix) {
+        return switch (suffix) {
             case "NAME" -> BotState.PROFILE_WAITING_NAME;
             case "PHONE" -> BotState.PROFILE_WAITING_PHONE;
             case "BUDGET" -> BotState.PROFILE_WAITING_BUDGET;

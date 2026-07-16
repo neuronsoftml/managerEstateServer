@@ -1,11 +1,10 @@
 package core.telegram.main;
 
 import controllers.telegram.ProfileWizardController;
-import model.Announcement;
-import model.CategoryLocation;
-import model.City;
+import model.*;
 import core.telegram.model.BotState;
 import core.telegram.model.Config;
+
 import core.telegram.model.UserSession;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChatMember;
@@ -24,6 +23,7 @@ import sqlite.ProjectDatabaseService;
 
 import java.io.PrintStream;
 import java.util.*;
+
 
 /**
  * Телеграм-бот для приватного покрокового пошуку нерухомості з фільтрами.
@@ -183,8 +183,8 @@ public class PrivateMainBot extends TelegramLongPollingBot {
         // Формуємо список кнопок для головного меню
         Map<String, String> mainMenuButtons = new LinkedHashMap<>();
         mainMenuButtons.put("🔍 Пошук нерухомості", "MENU_SEARCH_ADS");
-        mainMenuButtons.put("🏗 Створити оголошення (здати квартиру)", "MENU_CREATE_AD");
-        mainMenuButtons.put("📝 Створити анкету (шукаю житло)", "MENU_CREATE_PROFILE");
+        mainMenuButtons.put("🏗 Створити оголошення \n (здати квартиру)", "MENU_CREATE_AD");
+        mainMenuButtons.put("📝 Створити анкету \n (шукаю житло в оренду)", "MENU_CREATE_PROFILE");
 
         // Генеруємо вертикальну клавіатуру без кнопки "Назад" (бо це корінь бота)
         message.setReplyMarkup(InlineKeyboardFactory.createVertical(mainMenuButtons, null, null));
@@ -197,7 +197,53 @@ public class PrivateMainBot extends TelegramLongPollingBot {
     }
 
     /**
-     * КРОК 1: Надсилає користувачу нове повідомлення зі списком доступних районів (міст).
+     * КРОК 1: Тип угоди — Купівля чи Оренда.
+     */
+    private void editToDealTypeSelection(long chatId, int messageId) {
+        EditMessageText edit = new EditMessageText();
+        edit.setChatId(String.valueOf(chatId));
+        edit.setMessageId(messageId);
+        edit.setText("🔍 Що вас цікавить?");
+
+        List<List<InlineKeyboardButton>> keyboard = new ArrayList<>();
+        keyboard.add(InlineKeyboardFactory.createRow(new String[][]{
+                {"🛒 " + DealType.BUY.getLabel(), "DEAL_BUY"}, {"🏠 " + DealType.RENT.getLabel(), "DEAL_RENT"}
+        }));
+        keyboard.add(InlineKeyboardFactory.createRow(new String[][]{{"⬅️ Назад в меню", "BACK_TO_MENU"}}));
+
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        markup.setKeyboard(keyboard);
+        edit.setReplyMarkup(markup);
+
+        try { execute(edit); } catch (Exception e) { e.printStackTrace(); }
+    }
+
+    /**
+     * КРОК 2: Тип нерухомості.
+     * Земельна ділянка доступна лише при купівлі — OLX не має окремої категорії
+     * "оренда земельної ділянки", тому такий варіант просто не пропонуємо.
+     */
+    private void editToPropertyTypeSelection(long chatId, int messageId, DealType dealType) {
+        EditMessageText edit = new EditMessageText();
+        edit.setChatId(String.valueOf(chatId));
+        edit.setMessageId(messageId);
+        edit.setText("🏘 Оберіть тип нерухомості:");
+
+        Map<String, String> buttons = new LinkedHashMap<>();
+        buttons.put(PropertyType.APARTMENT.getLabel(),  "PTYPE_APARTMENT");
+        buttons.put(PropertyType.HOUSE.getLabel(),      "PTYPE_HOUSE");
+        buttons.put(PropertyType.COMMERCIAL.getLabel(), "PTYPE_COMMERCIAL");
+        if (dealType == DealType.BUY) {
+            buttons.put(PropertyType.LAND.getLabel(), "PTYPE_LAND");
+        }
+
+        edit.setReplyMarkup(InlineKeyboardFactory.createVertical(buttons, "⬅️ Назад", "BACK_TO_DEAL_TYPE"));
+
+        try { execute(edit); } catch (Exception e) { e.printStackTrace(); }
+    }
+
+    /**
+     * КРОК 3: Надсилає користувачу нове повідомлення зі списком доступних районів (міст).
      */
     private void editToCitySelection(long chatId, int messageId) {
         EditMessageText edit = new EditMessageText();
@@ -210,8 +256,8 @@ public class PrivateMainBot extends TelegramLongPollingBot {
             cityButtons.put(city.getLabel(), "CITY_" + city.name());
         }
 
-        // Додаємо кнопку "Назад" для повернення у головне меню
-        edit.setReplyMarkup(InlineKeyboardFactory.createVertical(cityButtons, "⬅️ Назад в меню", "BACK_TO_MENU"));
+        // "Назад" тепер веде до вибору типу нерухомості, а не одразу в меню
+        edit.setReplyMarkup(InlineKeyboardFactory.createVertical(cityButtons, "⬅️ Назад", "BACK_TO_PROPERTY_TYPE"));
 
         try {
             execute(edit);
@@ -221,27 +267,7 @@ public class PrivateMainBot extends TelegramLongPollingBot {
     }
 
     /**
-     * КРОК 2: Редагує поточне повідомлення, виводячи список типів угод (категорій).
-     */
-    private void editToCategorySelection(long chatId, int messageId, City city) {
-        EditMessageText edit = new EditMessageText();
-        edit.setChatId(String.valueOf(chatId));
-        edit.setMessageId(messageId);
-        edit.setText("🏢 Район \"" + city.getLabel() + "\" зафіксовано.\n🔑 Оберіть тип угоди:");
-
-        // Збираємо мапу категорій на основі енума CategoryLocation
-        Map<String, String> catButtons = new LinkedHashMap<>();
-        for (CategoryLocation cat : CategoryLocation.values()) {
-            catButtons.put(cat.getLabel(), "CAT_" + cat.name());
-        }
-        // Створюємо клавіатуру з можливістю повернутися на попередній крок (до районів)
-        edit.setReplyMarkup(InlineKeyboardFactory.createVertical(catButtons, "⬅️ Назад до районів", "BACK_TO_CITY"));
-
-        try { execute(edit); } catch (Exception e) { e.printStackTrace(); }
-    }
-
-    /**
-     * КРОК 3: Редагує повідомлення для вибору кількості кімнат.
+     * КРОК 4 (лише для квартир): Редагує повідомлення для вибору кількості кімнат.
      */
     private void editToRoomsSelection(long chatId, int messageId) {
         EditMessageText edit = new EditMessageText();
@@ -249,19 +275,15 @@ public class PrivateMainBot extends TelegramLongPollingBot {
         edit.setMessageId(messageId);
         edit.setText("📊 Скільки кімнат вас цікавить?");
 
-        // Комбінована структура кнопок (горизонтальні та вертикальні ряди)
         List<List<InlineKeyboardButton>> keyboard = new ArrayList<>();
-        // Ряд 1: Кнопки вибору 1, 2, 3 кімнат в один рядок
         keyboard.add(InlineKeyboardFactory.createRow(new String[][]{
-                {"1-кімнатна", "ROOMS_1"}, {"2-кімнатна", "ROOMS_2"}, {"3-кімнатна", "ROOMS_3"}
+                {"1-кімнатна", "ROOMS_1"}, {"2-кімнатна", "ROOMS_2"}
         }));
-        // Ряд 2: Кнопка пропуску фільтра кімнат
         keyboard.add(InlineKeyboardFactory.createRow(new String[][]{
-                {"Показати всі варіанти (пропустити)", "ROOMS_ANY"}
+                {"3-кімнатна", "ROOMS_3"}, {"3+ кімнат", "ROOMS_3PLUS"}
         }));
-        // Ряд 3: Кнопка повернення до вибору категорій
         keyboard.add(InlineKeyboardFactory.createRow(new String[][]{
-                {"⬅️ Назад до категорій", "BACK_TO_CAT"}
+                {"⬅️ Назад до районів", "BACK_TO_CITY"}
         }));
 
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
@@ -272,8 +294,9 @@ public class PrivateMainBot extends TelegramLongPollingBot {
     }
 
     /**
-     * КРОК 4: Редагує повідомлення для вибору цінового діапазону.
-     * Діапазони автоматично підлаштовуються під тип угоди (оренда чи продаж).
+     * КРОК 5: Редагує повідомлення для вибору цінового діапазону.
+     * Діапазони підлаштовуються під тип угоди (DealType), а не під OLX-категорію.
+     * Кнопка "Назад" веде або до кімнат (квартири), або одразу до міст (решта типів).
      */
     private void editToPriceSelection(long chatId, int messageId, UserSession session) {
         EditMessageText edit = new EditMessageText();
@@ -281,27 +304,26 @@ public class PrivateMainBot extends TelegramLongPollingBot {
         edit.setMessageId(messageId);
         edit.setText("💰 Оберіть бажаний бюджет (у доларах $):");
 
-        // Перевіряємо, чи поточний вибір стосується довгострокової оренди
-        boolean isRent = session.getSelectedCategory() != null &&
-                (session.getSelectedCategory().name().contains("RENT") || session.getSelectedCategory().getLabel().toLowerCase().contains("оренда"));
-
         Map<String, String> priceButtons = new LinkedHashMap<>();
-        // Формуємо сітку цін відповідно до типу обраної нерухомості
-        if (isRent) {
-            priceButtons.put("150$ - 300$", "PRICE_150_300");
-            priceButtons.put("300$ - 450$", "PRICE_300_450");
-            priceButtons.put("450$ - 600$", "PRICE_450_600");
-            priceButtons.put("600$ - 1000$", "PRICE_600_1000");
+        if (session.getSelectedDealType() == DealType.RENT) {
+            priceButtons.put("до 200$",  "PRICE_0_200");
+            priceButtons.put("до 300$",  "PRICE_0_300");
+            priceButtons.put("до 400$",  "PRICE_0_400");
+            priceButtons.put("до 500$",  "PRICE_0_500");
+            priceButtons.put("500$+",    "PRICE_500_999999");
         } else {
-            priceButtons.put("30 000$ - 45 000$", "PRICE_30000_45000");
-            priceButtons.put("45 000$ - 60 000$", "PRICE_45000_60000");
-            priceButtons.put("60 000$ - 75 000$", "PRICE_60000_75000");
-            priceButtons.put("75 000$ - 2 000 000$", "PRICE_75000_2000000");
+            priceButtons.put("до 30 000$",   "PRICE_0_30000");
+            priceButtons.put("до 50 000$",   "PRICE_0_50000");
+            priceButtons.put("до 70 000$",   "PRICE_0_70000");
+            priceButtons.put("до 100 000$",  "PRICE_0_100000");
+            priceButtons.put("100 000$+",    "PRICE_100000_200000");
+            priceButtons.put("200 000$+",    "PRICE_200000_999999999");
         }
         priceButtons.put("Будь-яка ціна", "PRICE_ANY");
 
-        // Кнопка "Назад" тут веде до вибору кількості кімнат
-        edit.setReplyMarkup(InlineKeyboardFactory.createVertical(priceButtons, "⬅️ Назад до кімнат", "BACK_TO_ROOMS"));
+        String backCallback = session.getSelectedPropertyType() == PropertyType.APARTMENT ? "BACK_TO_ROOMS" : "BACK_TO_CITY";
+        String backText = session.getSelectedPropertyType() == PropertyType.APARTMENT ? "⬅️ Назад до кімнат" : "⬅️ Назад до районів";
+        edit.setReplyMarkup(InlineKeyboardFactory.createVertical(priceButtons, backText, backCallback));
 
         try { execute(edit); } catch (Exception e) { e.printStackTrace(); }
     }
@@ -324,21 +346,28 @@ public class PrivateMainBot extends TelegramLongPollingBot {
                     sendMainMenu(chatId);
                     return;
                 }
+                case "BACK_TO_DEAL_TYPE" -> {
+                    session.setState(BotState.WAITING_FOR_DEAL_TYPE);
+                    session.setSelectedDealType(null);
+                    editToDealTypeSelection(chatId, messageId);
+                    return;
+                }
+                case "BACK_TO_PROPERTY_TYPE" -> {
+                    session.setState(BotState.WAITING_FOR_PROPERTY_TYPE);
+                    session.setSelectedPropertyType(null);
+                    editToPropertyTypeSelection(chatId, messageId, session.getSelectedDealType());
+                    return;
+                }
                 case "BACK_TO_CITY" -> {
                     session.setState(BotState.WAITING_FOR_CITY);
                     session.setSelectedCity(null);
                     editToCitySelection(chatId, messageId);
                     return;
                 }
-                case "BACK_TO_CAT" -> {
-                    session.setState(BotState.WAITING_FOR_CATEGORY);
-                    session.setSelectedCategory(null);
-                    editToCategorySelection(chatId, messageId, session.getSelectedCity());
-                    return;
-                }
                 case "BACK_TO_ROOMS" -> {
                     session.setState(BotState.WAITING_FOR_ROOMS);
                     session.setSelectedRooms(null);
+                    session.setRoomsIsMinimum(false);
                     editToRoomsSelection(chatId, messageId);
                     return;
                 }
@@ -376,8 +405,8 @@ public class PrivateMainBot extends TelegramLongPollingBot {
      */
     private boolean handlerButtonMenu(String data, UserSession session, long chatId, int messageId) {
         if (data.equals("MENU_SEARCH_ADS")) {
-            session.setState(BotState.WAITING_FOR_CITY);
-            editToCitySelection(chatId, messageId);
+            session.setState(BotState.WAITING_FOR_DEAL_TYPE);
+            editToDealTypeSelection(chatId, messageId);
             return true;
         }
         else if (data.equals("MENU_CREATE_AD")) {
@@ -407,19 +436,23 @@ public class PrivateMainBot extends TelegramLongPollingBot {
      */
     private void handlerFilterButtonController(String data, UserSession session, long chatId, int messageId) throws Exception {
 
-        // Крок 1: Обрання міста
-        if (data.startsWith("CITY_") && session.getState() == BotState.WAITING_FOR_CITY) {
+        // Крок 1: Обрання типу угоди (Купівля / Оренда)
+        if (data.startsWith("DEAL_") && session.getState() == BotState.WAITING_FOR_DEAL_TYPE) {
+            handlerSelectDealType(data, session, chatId, messageId);
+        }
+        // Крок 2: Обрання типу нерухомості
+        else if (data.startsWith("PTYPE_") && session.getState() == BotState.WAITING_FOR_PROPERTY_TYPE) {
+            handlerSelectPropertyType(data, session, chatId, messageId);
+        }
+        // Крок 3: Обрання міста
+        else if (data.startsWith("CITY_") && session.getState() == BotState.WAITING_FOR_CITY) {
             handlerSelectCity(data, session, chatId, messageId);
         }
-        // Крок 2: Обрання категорії (угоди)
-        else if (data.startsWith("CAT_") && session.getState() == BotState.WAITING_FOR_CATEGORY) {
-            handlerSelectCategory(data, session, chatId, messageId);
-        }
-        // Крок 3: Обрання кількості кімнат
+        // Крок 4 (лише квартири): Обрання кількості кімнат
         else if (data.startsWith("ROOMS_") && session.getState() == BotState.WAITING_FOR_ROOMS) {
             handlerRoomsSelection(data, session, chatId, messageId);
         }
-        // Крок 4: Обрання ціни
+        // Крок 5: Обрання ціни
         else if (data.startsWith("PRICE_") && session.getState() == BotState.WAITING_FOR_PRICE) {
             handlerPriceSelection(data, session, chatId, messageId);
         }
@@ -476,44 +509,21 @@ public class PrivateMainBot extends TelegramLongPollingBot {
         // 1. Прибираємо кнопки пагінації та фільтрів з попереднього екрана результатів
         clearMarkup(chatId, messageId);
 
-        // 2. Визначаємо, яка категорія була обрана перед цим
-        CategoryLocation currentCat = userSession.getSelectedCategory();
+        // 2. Повністю скидаємо всі фільтри та повертаємось на самий початок воронки
+        userSession.setState(BotState.WAITING_FOR_DEAL_TYPE);
+        userSession.setSelectedDealType(null);
+        userSession.setSelectedPropertyType(null);
+        userSession.setSelectedCity(null);
+        userSession.setSelectedCategory(null);
+        userSession.setSelectedRooms(null);
+        userSession.setRoomsIsMinimum(false);
+        userSession.setPriceRangeUsd(null, null);
 
-        // ОСОБЛИВІСТЬ: Оскільки подобова оренда не мала екранів цін/кімнат,
-        // при поверненні назад ми відправляємо юзера на вибір категорій, зберігаючи місто.
-        if (currentCat == CategoryLocation.RENT_SHORT) {
-            // Тимчасово зберігаємо раніше обраний район/місто
-            City savedCity = userSession.getSelectedCity();
-
-            // Повністю видаляємо стару сесію результатів пошуку
-            userSessions.remove(chatId);
-
-            // Створюємо нову чисту сесію та переводимо її у стан вибору категорії
-            UserSession newSession = new UserSession(BotState.WAITING_FOR_CATEGORY);
-            newSession.setSelectedCity(savedCity);
-            userSessions.put(chatId, newSession);
-
-            // Створюємо та відправляємо сервісне повідомлення-заглушку
-            SendMessage dummy = new SendMessage();
-            dummy.setChatId(String.valueOf(chatId));
-            dummy.setText("⏳ Повернення до категорій...");
-            int dummyId = execute(dummy).getMessageId();
-
-            // Оновлюємо заглушку, перетворюючи її на екран вибору категорії нерухомості
-            editToCategorySelection(chatId, dummyId, savedCity);
-        } else {
-            userSession.setState(BotState.WAITING_FOR_CITY);
-            userSession.setSelectedCity(null);
-            userSession.setSelectedCategory(null);
-            userSession.setSelectedRooms(null);
-            userSession.setPriceRangeUsd(null, null);
-
-            SendMessage msg = new SendMessage();
-            msg.setChatId(String.valueOf(chatId));
-            msg.setText("🔄 Скидання фільтрів...");
-            int dummyId = execute(msg).getMessageId();
-            editToCitySelection(chatId, dummyId);
-        }
+        SendMessage msg = new SendMessage();
+        msg.setChatId(String.valueOf(chatId));
+        msg.setText("🔄 Скидання фільтрів...");
+        int dummyId = execute(msg).getMessageId();
+        editToDealTypeSelection(chatId, dummyId);
     }
 
     /**
@@ -577,7 +587,7 @@ public class PrivateMainBot extends TelegramLongPollingBot {
      * Обробляє крок вибору кількості кімнат.
      * Фіксує вибір користувача в сесії та перемикає інтерфейс на меню вибору бюджету.
      *
-     * @param data        Сирі дані кнопки кімнат (наприклад, "ROOMS_1", "ROOMS_ANY")
+     * @param data        Сирі дані кнопки кімнат (наприклад, "ROOMS_1", "ROOMS_3PLUS")
      * @param userSession Поточна сесія користувача
      * @param chatId      ID чату з користувачем
      * @param messageId   ID повідомлення, під яким натиснули кнопку
@@ -586,8 +596,14 @@ public class PrivateMainBot extends TelegramLongPollingBot {
         // 1. Очищуємо callback-рядок від префікса
         String roomsVal = data.replace("ROOMS_", "");
 
-        // 2. Якщо обрано пропуск фільтра кімнат — ставимо null, інакше — парсимо число в сесію
-        userSession.setSelectedRooms(roomsVal.equals("ANY") ? null : Integer.parseInt(roomsVal));
+        // 2. "3PLUS" означає "3 і більше кімнат" — точний збіг тут не підходить
+        if (roomsVal.equals("3PLUS")) {
+            userSession.setSelectedRooms(3);
+            userSession.setRoomsIsMinimum(true);
+        } else {
+            userSession.setSelectedRooms(Integer.parseInt(roomsVal));
+            userSession.setRoomsIsMinimum(false);
+        }
 
         // 3. Переводимо автомат у стан очікування фільтра цін
         userSession.setState(BotState.WAITING_FOR_PRICE);
@@ -597,41 +613,30 @@ public class PrivateMainBot extends TelegramLongPollingBot {
     }
 
     /**
-     * Обробляє крок вибору типу угоди (категорії) нерухомості.
-     * Містить розгалуження для подобової оренди, яка запускає миттєвий пошук без вибору цін/кімнат.
-     *
-     * @param data        Сирі дані кнопки категорії (наприклад, "CAT_SALE", "CAT_RENT_SHORT")
-     * @param userSession Поточна сесія користувача
-     * @param chatId      ID чату з користувачем
-     * @param messageId   ID повідомлення, під яким натиснули кнопку
-     * @throws Exception Якщо виникає помилка під час миттєвого звернення до БД (для подобової оренди)
+     * Обробляє крок вибору типу угоди (Купівля / Оренда) — перший крок нової воронки.
      */
-    private void handlerSelectCategory(String data, UserSession userSession, long chatId, int messageId) throws Exception {
-        // 1. Парсимо та визначаємо обраний елемент енума CategoryLocation
-        CategoryLocation selectedCat = CategoryLocation.valueOf(data.replace("CAT_", ""));
-        userSession.setSelectedCategory(selectedCat);
-
-        // ОСОБЛИВІСТЬ: Для подобової оренди вибір кімнат і цін пропускається!
-        if (selectedCat == CategoryLocation.RENT_SHORT) {
-            // Автоматично виставляємо дефолтні значення для широкого пошуку
-            userSession.setSelectedRooms(null);       // Будь-яка кількість кімнат
-            userSession.setPriceRangeUsd(null, null); // Будь-яка ціна
-            userSession.setCurrentOffset(0);          // Починаємо з першого оголошення (offset = 0)
-            userSession.setState(BotState.SHOWING_RESULTS); // Одразу перемикаємо на показ результатів
-
-            // Очищуємо кнопки вибору категорій та робимо пряму видачу оголошень у чат
-            clearMarkup(chatId, messageId);
-            sendAdsBatch(chatId, userSession);
-        } else {
-            // Для довгострокової оренди або продажу переходимо до наступного стандартного кроку — кімнат
-            userSession.setState(BotState.WAITING_FOR_ROOMS);
-            editToRoomsSelection(chatId, messageId);
-        }
+    private void handlerSelectDealType(String data, UserSession userSession, long chatId, int messageId) {
+        DealType dealType = data.equals("DEAL_BUY") ? DealType.BUY : DealType.RENT;
+        userSession.setSelectedDealType(dealType);
+        userSession.setState(BotState.WAITING_FOR_PROPERTY_TYPE);
+        editToPropertyTypeSelection(chatId, messageId, dealType);
     }
 
     /**
-     * Обробляє найперший крок фільтрації — вибір географічного району (міста).
-     * Записує район у сесію та перемикає користувача на меню вибору категорій.
+     * Обробляє крок вибору типу нерухомості (Квартира / Будинок / Комерційна / Земля).
+     */
+    private void handlerSelectPropertyType(String data, UserSession userSession, long chatId, int messageId) {
+        PropertyType type = PropertyType.valueOf(data.replace("PTYPE_", ""));
+        userSession.setSelectedPropertyType(type);
+        userSession.setState(BotState.WAITING_FOR_CITY);
+        editToCitySelection(chatId, messageId);
+    }
+
+    /**
+     * Обробляє крок вибору географічного району (міста).
+     * Записує район у сесію, визначає відповідну CategoryLocation для SQL-фільтра
+     * на основі комбінації DealType + PropertyType, і залежно від типу нерухомості
+     * веде або на вибір кімнат (лише квартири), або одразу на ціну.
      *
      * @param data        Сирі дані кнопки міста (наприклад, "CITY_CHERNIVTSI")
      * @param userSession Поточна сесія користувача
@@ -639,14 +644,41 @@ public class PrivateMainBot extends TelegramLongPollingBot {
      * @param messageId   ID повідомлення, під яким натиснули кнопку
      */
     private void handlerSelectCity(String data, UserSession userSession, long chatId, int messageId)  {
-        // 1. Витягуємо назву міста з callback-даних та конвертуємо в енум City
         userSession.setSelectedCity(City.valueOf(data.replace("CITY_", "")));
+        userSession.setSelectedCategory(resolveCategoryLocation(userSession.getSelectedDealType(), userSession.getSelectedPropertyType()));
 
-        // 2. Змінюємо внутрішній статус сесії користувача
-        userSession.setState(BotState.WAITING_FOR_CATEGORY);
+        if (userSession.getSelectedPropertyType() == PropertyType.APARTMENT) {
+            userSession.setState(BotState.WAITING_FOR_ROOMS);
+            editToRoomsSelection(chatId, messageId);
+        } else {
+            // Для будинків/комерції/землі кроку кімнат немає — одразу до ціни
+            userSession.setState(BotState.WAITING_FOR_PRICE);
+            editToPriceSelection(chatId, messageId, userSession);
+        }
+    }
 
-        // 3. Модифікуємо візуальне вікно бота, пропонуючи обрати тип угоди
-        editToCategorySelection(chatId, messageId, userSession.getSelectedCity());
+    /**
+     * Мапить обрану користувачем комбінацію (тип угоди + тип нерухомості) на
+     * реальну AnnouncementCategory, яку вміє шукати OLX-парсер. Повертає null
+     * лише для комбінацій, яких OLX взагалі не має (оренда земельної ділянки —
+     * такого варіанту й не пропонує editToPropertyTypeSelection, але про всяк
+     * випадок обробляємо і тут захисним null).
+     */
+    private AnnouncementCategory resolveCategoryLocation(DealType dealType, PropertyType propertyType) {
+        if (dealType == DealType.RENT) {
+            return switch (propertyType) {
+                case APARTMENT  -> AnnouncementCategory.RENT_LONG;
+                case HOUSE      -> AnnouncementCategory.RENT_HOUSE;
+                case COMMERCIAL -> AnnouncementCategory.RENT_COMMERCIAL;
+                case LAND       -> null; // оренди земельних ділянок OLX не пропонує
+            };
+        }
+        return switch (propertyType) {
+            case APARTMENT  -> AnnouncementCategory.SALE_APARTMENTS;
+            case HOUSE      -> AnnouncementCategory.SALE_HOUSE;
+            case COMMERCIAL -> AnnouncementCategory.SALE_COMMERCIAL;
+            case LAND       -> AnnouncementCategory.SALE_LAND_PARCEL;
+        };
     }
 
     /**
@@ -672,6 +704,23 @@ public class PrivateMainBot extends TelegramLongPollingBot {
      * і порційно відправляє їх у чат пакетами по 3 штуки.
      */
     private void sendAdsBatch(long chatId, UserSession session) throws Exception {
+        // ЗАХИСТ: guard за resolveCategoryLocation(), а не просто "не квартира".
+        // Будинок/Комерція/Земля тепер МАЮТЬ реальну CategoryLocation при Купівлі —
+        // заглушка спрацьовує лише для справді непідтримуваних комбінацій
+        // (наприклад, оренда будинку — такої категорії парсер не збирає).
+        if (session.getSelectedCategory() == null) {
+            SendMessage placeholder = new SendMessage();
+            placeholder.setChatId(String.valueOf(chatId));
+            placeholder.setText("🚧 Пошук \"" + session.getSelectedDealType().getLabel() + " — " +
+                    session.getSelectedPropertyType().getLabel() + "\" ще не підтримується. Спробуйте, будь ласка, інший тип угоди.");
+            placeholder.setReplyMarkup(InlineKeyboardFactory.createVertical(new LinkedHashMap<>() {{
+                put("🔄 Новий пошук", "BACK_TO_FILTERS");
+                put("🚪 Вихід", "EXIT_BOT");
+            }}, null, null));
+            execute(placeholder);
+            return;
+        }
+
         // Звертаємось до сервісу бази даних, передаючи туди заповнений об'єкт сесії фільтрів
         List<Announcement> allFilteredAds = ProjectDatabaseService.getAnnouncementsByFilter(session);
         int offset = session.getCurrentOffset();
@@ -704,9 +753,9 @@ public class PrivateMainBot extends TelegramLongPollingBot {
             adMsg.setParseMode("HTML");
 
             // Делегуємо формування HTML-шаблону окремому класу-форматувальнику залежно від категорії
-            if (ad.getCategory() == CategoryLocation.RENT_SHORT) {
+            if (ad.getCategory() == AnnouncementCategory.RENT_SHORT) {
                 adMsg.setText(AnnouncementFormatter.toHtmlDailyRental(ad));
-            } else if (ad.getCategory() == CategoryLocation.SALE) {
+            } else if (ad.getCategory() != null && ad.getCategory().name().startsWith("SALE")) {
                 adMsg.setText(AnnouncementFormatter.toHtmlForSale(ad));
             } else {
                 adMsg.setText(AnnouncementFormatter.toHtmlLongTermLease(ad));

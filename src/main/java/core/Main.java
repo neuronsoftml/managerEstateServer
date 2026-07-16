@@ -4,7 +4,6 @@ import controllers.UpdateBaseController;
 import controllers.telegram.TelegramController;
 import materials.Emoji;
 import model.ConsoleWindow;
-import core.telegram.model.agent.TelegramScannerTask;
 import sqlite.DatabaseManager;
 
 private static UpdateBaseController updateBaseController;
@@ -35,8 +34,7 @@ private static void startCoreServerFunctionality(){
     startMainScheduler(consoleWindowController.getMainConsole());
     telegramController.start(consoleWindowController.getTelegramBotConsole());
     updateDataBse();
-
-    startAgentTelegramGroup();
+    
 }
 
 /**
@@ -76,14 +74,7 @@ private static void startMainScheduler(ConsoleWindow consoleWindowMain) {
     mainOut.println(Emoji.CALENDAR.view() + " Головний планувальник запущено.");
 }
 
-/**
- * Запускає агента для скану груп в телеграмі
- */
-private static void startAgentTelegramGroup() {
-    Thread scannerThread = new Thread(new TelegramScannerTask(), "Telegram-Scanner-Thread");
-    scannerThread.setDaemon(false); // щоб процес не закривався системою
-    scannerThread.start();
-}
+
 
 
 

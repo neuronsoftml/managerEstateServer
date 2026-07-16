@@ -1,39 +1,90 @@
 package model;
 
-import java.math.BigDecimal;
 
+/**
+ * Перерахування (Enum) валют, що використовуються для розрахунків та відображення цін.
+ * <p>
+ * Кожна валюта містить графічний символ (slug), який використовується для пошуку валюти
+ * у сирих текстових рядках оголошень, та офіційний трилітерний код ISO 4217 (label)
+ * для системних операцій, запитів до API курсів валют (наприклад, ПриватБанку) чи збереження в БД.
+ * </p>
+ * * @author Mykola
+ */
 public enum Currency {
+
+    /** Долар США ($) */
     USD ("$", "USD"),
-    EUR ("€","EUR"),
+
+    /** Євро (€) */
+    EUR ("€", "EUR"),
+
+    /** Українська гривня (грн) */
     UAH ("грн", "UAH");
 
+    /** Символ валюти, що зустрічається в тексті оголошень на OLX (наприклад, "$", "€", "грн") */
     private final String slug;
-    private  final String label;
 
-    Currency(String slug, String label){
-        this.slug = slug;
+    /** Офіційне позначення валюти або її ISO-код (наприклад, "USD", "EUR", "UAH") */
+    private final String label;
+
+    /**
+     * Конструктор для ініціалізації елементів перерахування валюти.
+     *
+     * @param slug  текстовий символ/символьне позначення валюти
+     * @param label системний ідентифікатор (код валюти)
+     */
+    Currency(String slug, String label) {
+        this.slug  = slug;
         this.label = label;
     }
 
-
-    public String getSlug() {return slug;}
-
-    public String getLabel() {return label;}
-
+    /**
+     * Повертає графічний або текстовий символ валюти (slug), що використовується у верстці.
+     *
+     * @return символ валюти (наприклад, "$")
+     */
+    public String getSlug() {
+        return slug;
+    }
 
     /**
-     * Витягує валюту з рядка ціни.
-     * Приклади: "450 €" → 450 / EUR
-     *           "12 000 грн." → 12000 / UAH
-     *           "Договірна" → null / ""
+     * Повертає офіційний код валюти (label) для системної логіки та конвертації курсів.
+     *
+     * @return ISO-код валюти (наприклад, "USD")
+     */
+    public String getLabel() {
+        return label;
+    }
+
+    /**
+     * Витягує та визначає валюту із сирого рядка ціни оголошення.
+     * Перевіряє наявність символів або ключових слів, що відповідають кожній валюті.
+     * * <p><b>Приклади роботи:</b></p>
+     * <ul>
+     * <li>{@code "450 $"} &rarr; {@code "USD"}</li>
+     * <li>{@code "12 000 грн."} &rarr; {@code "UAH"}</li>
+     * <li>{@code "Договірна"} &rarr; {@code null}</li>
+     * </ul>
+     *
+     * @param raw сирий текстовий рядок ціни з картки або сторінки OLX
+     * @return рядок з кодом валюти (наприклад, "USD", "EUR", "UAH"),
+     * або {@code null}, якщо валюту не вдалося визначити (наприклад, ціна договірна або порожня)
      */
     public static String parsePrice(String raw) {
-        if (raw == null || raw.isBlank()) return null;
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
 
-        // Визначаємо валюту
-        if (raw.contains(USD.getSlug()))    return USD.label;
-        else if (raw.contains(EUR.getSlug())) return EUR.label;
-        else if (raw.toLowerCase().contains(UAH.getSlug())) return UAH.label;
+        // Послідовна перевірка на входження символів валют у вхідний рядок
+        if (raw.contains(USD.getSlug())) {
+            return USD.label;
+        } else if (raw.contains(EUR.getSlug())) {
+            return EUR.label;
+        } else if (raw.toLowerCase().contains(UAH.getSlug())) {
+            return UAH.label;
+        }
+
+        // Повертаємо null, якщо у тексті немає жодного відомого символу валюти (наприклад, "Договірна")
         return null;
     }
 }
