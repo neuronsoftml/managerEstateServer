@@ -1,4 +1,4 @@
-package controllers;
+package core.serverDB.controllers;
 
 import model.ConsoleWindow;
 

@@ -1,5 +1,6 @@
 package core.tools.parser.olx;
 
+import core.serverDB.sqlite.ProjectDatabaseService;
 import model.Announcement;
 
 import java.io.File;
@@ -150,7 +151,7 @@ public class OlxDetailsParser {
             Announcement a = parseFile(file);
             if (a == null) continue;
 
-            if (onlyNew && sqlite.ProjectDatabaseService.exists(a.getId())) {
+            if (onlyNew && ProjectDatabaseService.exists(a.getId())) {
                 skipped++;
                 continue;
             }

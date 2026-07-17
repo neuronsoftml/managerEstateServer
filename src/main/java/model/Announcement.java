@@ -2,6 +2,8 @@ package model;
 
 import core.tools.parser.olx.AnnouncementParamParser;
 import core.tools.parser.olx.ParserPrice;
+import core.tools.parser.olx.PriceParser;
+import core.tools.parser.olx.PriceResult;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -101,7 +103,7 @@ public class Announcement {
             return;
         }
         try {
-            ParserPrice.PriceParser.PriceResult result = ParserPrice.PriceParser.parse(rawPrice);
+         PriceResult result = PriceParser.parse(rawPrice);
             this.priceValue = result.getValue();
             this.priceCurrency = result.getCurrency();
         } catch (Exception e) {

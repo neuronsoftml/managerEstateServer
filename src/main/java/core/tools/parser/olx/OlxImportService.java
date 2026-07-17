@@ -1,8 +1,7 @@
 package core.tools.parser.olx;
 
-import core.telegram.TelegramNotificationService;
 import model.Announcement;
-import sqlite.ProjectDatabaseService;
+import core.serverDB.sqlite.ProjectDatabaseService;
 
 import java.io.File;
 import java.io.PrintStream;

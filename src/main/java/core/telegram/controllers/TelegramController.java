@@ -1,4 +1,4 @@
-package controllers.telegram;
+package core.telegram.controllers;
 
 
 import core.telegram.main.PrivateMainBot;

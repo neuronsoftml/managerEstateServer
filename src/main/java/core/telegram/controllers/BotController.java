@@ -7,4 +7,5 @@ import java.io.PrintStream;
 
 public interface BotController {
     void handle(Update update, UserSession session, PrintStream botOut);
+
 }

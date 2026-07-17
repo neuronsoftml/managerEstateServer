@@ -1,4 +1,4 @@
-package sqlite;
+package core.serverDB.sqlite;
 import core.telegram.model.TenantApplicationForm;
 import core.tools.PrivatBankRateService;
 import model.Announcement;

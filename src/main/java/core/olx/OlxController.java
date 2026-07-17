@@ -1,4 +1,4 @@
-package controllers.olx;
+package core.olx;
 
 import core.tools.parser.olx.OlxHtmlParser;
 import core.tools.parser.olx.OlxStorageService;

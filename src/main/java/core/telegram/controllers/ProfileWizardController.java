@@ -1,17 +1,16 @@
-package controllers.telegram;
+package core.telegram.controllers;
 
 import core.telegram.main.InlineKeyboardFactory;
 import core.telegram.model.BotState;
 import core.telegram.model.TenantApplicationForm;
 import core.telegram.model.UserSession;
 import model.City;
-import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageReplyMarkup;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
-import sqlite.ProjectDatabaseService;
+import core.serverDB.sqlite.ProjectDatabaseService;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -30,21 +29,21 @@ import java.util.regex.Pattern;
  * </p>
  * <p>
  * Архітектурно контролер є <b>Stateless</b> (без збереження стану). Він тримає лише фінальне посилання
- * на екземпляр Telegram-бота для виконання мережевих запитів. Увесь стан проходження кроків
+ * на {@link TelegramSender} для виконання мережевих запитів. Увесь стан проходження кроків
  * та проміжні дані повністю делеговані об'єкту {@link UserSession}.
  * </p>
  */
 public class ProfileWizardController {
 
-    /** Екземпляр Telegram-бота для надсилання та редагування повідомлень */
-    private final TelegramLongPollingBot bot;
+    /** Вузький інтерфейс для надсилання та редагування повідомлень (той самий, що й в інших контролерах). */
+    private final TelegramSender bot;
 
     /**
      * Конструктор контролера опитувальника.
      *
-     * @param bot інстанс бота, через який виконуються запити до Telegram API
+     * @param bot об'єкт, через який виконуються запити до Telegram API
      */
-    public ProfileWizardController(TelegramLongPollingBot bot) {
+    public ProfileWizardController(TelegramSender bot) {
         this.bot = bot;
     }
 
@@ -587,7 +586,7 @@ public class ProfileWizardController {
         edit.setParseMode("HTML");
         edit.setText("✏️ Який пункт анкети бажаєте змінити?");
         edit.setReplyMarkup(InlineKeyboardFactory.createVertical(buttons, "⬅️ Назад до анкети", "EDIT_BACK_TO_CONFIRM"));
-        bot.execute(edit);
+        bot.executeMethod(edit);
     }
 
     // ==========================================
@@ -610,7 +609,7 @@ public class ProfileWizardController {
         clear.setChatId(String.valueOf(chatId));
         clear.setMessageId(messageId);
         clear.setReplyMarkup(null);
-        try { bot.execute(clear); } catch (Exception ignored) {}
+        try { bot.executeMethod(clear); } catch (Exception ignored) {}
 
         SendMessage result = new SendMessage();
         result.setChatId(String.valueOf(chatId));
@@ -632,7 +631,7 @@ public class ProfileWizardController {
         markup.setKeyboard(kb);
         result.setReplyMarkup(markup);
 
-        bot.execute(result);
+        bot.executeMethod(result);
 
         session.setState(BotState.START);
         session.setProfileEditMode(false);
@@ -674,7 +673,7 @@ public class ProfileWizardController {
         markup.setKeyboard(keyboardRows);
         edit.setReplyMarkup(markup);
 
-        bot.execute(edit);
+        bot.executeMethod(edit);
     }
 
     private List<List<InlineKeyboardButton>> cancelOnlyKeyboard() {

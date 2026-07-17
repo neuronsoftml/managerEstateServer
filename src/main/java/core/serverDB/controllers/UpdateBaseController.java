@@ -1,6 +1,6 @@
-package controllers;
+package core.serverDB.controllers;
 
-import controllers.olx.OlxController;
+import core.olx.OlxController;
 
 import core.tools.parser.olx.OlxImportService;
 import core.tools.parser.olx.OlxStorageService;

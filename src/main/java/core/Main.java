@@ -1,10 +1,10 @@
 
-import controllers.ConsoleWindowController;
-import controllers.UpdateBaseController;
-import controllers.telegram.TelegramController;
+import core.serverDB.controllers.ConsoleWindowController;
+import core.serverDB.controllers.UpdateBaseController;
+import core.telegram.controllers.TelegramController;
 import materials.Emoji;
 import model.ConsoleWindow;
-import sqlite.DatabaseManager;
+import core.serverDB.sqlite.DatabaseManager;
 
 private static UpdateBaseController updateBaseController;
 private static ConsoleWindowController consoleWindowController;
