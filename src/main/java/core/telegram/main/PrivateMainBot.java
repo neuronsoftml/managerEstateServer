@@ -9,7 +9,9 @@ import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.BotApiMethod;
 import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChatMember;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageReplyMarkup;
+import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.chatmember.ChatMember;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
@@ -17,6 +19,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKe
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 
 import java.io.PrintStream;
+import java.io.Serializable;
 import java.util.*;
 
 
@@ -37,7 +40,6 @@ import java.util.*;
  */
 public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSender {
 
-
     /** Мапа для збереження індивідуальних сесій користувачів (ChatID -> Сесія) */
     private final Map<Long, UserSession> userSessions = new HashMap<>();
 
@@ -48,7 +50,7 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
     private final SearchAdsController searchAdsController = new SearchAdsController(this);
 
     /** Контролер бізнес-процесу "Створити оголошення". */
-    private final CreateAdController createAdController = new CreateAdController(this);
+    private final CreateAdPostController createAdPostController = new CreateAdPostController(this);
 
     /** Контролер бізнес-процесу "Створити анкету" (інкапсулює wizard-опитувальник анкети). */
     private final CreateProfileController createProfileController = new CreateProfileController(this);
@@ -68,8 +70,9 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
     }
 
     @Override
-    public void executeMethod(BotApiMethod<?> method) throws TelegramApiException {
-        execute(method);
+    public <T extends Serializable> T executeMethod(BotApiMethod<T> method) throws TelegramApiException {
+        // Бібліотека TelegramBots вже повертає T (наприклад, Message для SendMessage)
+        return execute(method);
     }
 
     @Override
@@ -82,6 +85,11 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
 
     @Override
     public String getBotToken() { return Config.TOKEN.getKey(); }
+
+    @Override
+    public void onRegister() {
+        super.onRegister();
+    }
 
     /**
      * Головна точка входу для всіх подій (оновлень), що надходять від Telegram.
@@ -112,27 +120,45 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
             }
         }
 
-        // 1. Обробка текстових повідомлень від користувача
-        if (update.hasMessage() && update.getMessage().hasText()) {
-            String text = update.getMessage().getText();
-            long chatId = update.getMessage().getChatId();
+        //String text = update.getMessage().getText();
 
-            // ГОЛОВНИЙ ФІЛЬТР: Перевіряємо підписку користувача
+        if (update.hasMessage()) {
+            long chatId = update.getMessage().getChatId();
+            UserSession session = userSessions.get(chatId);
+
+            // ГОЛОВНИЙ ФІЛЬТР: Перевіряємо підписку
             if (!isUserSubscribed(chatId)) {
                 sendSubscriptionWarning(chatId);
-                return; // Зупиняємо виконання, бот ігнорує будь-які команди, поки немає підписки
-            }
-
-            if (text.equals("/start")) {
-                startWorkflow(chatId);
                 return;
             }
 
-            // Маршрутизація вільного тексту до wizard-опитувальника анкети
-            UserSession textSession = userSessions.get(chatId);
-            if (textSession != null && CreateProfileController.isWizardState(textSession.getState())) {
+            // Обробка команд (лише якщо є текст)
+            if (update.getMessage().hasText()) {
+                String text = update.getMessage().getText();
+                if (text.equals("/start")) {
+                    startWorkflow(chatId);
+                    return;
+                }
+            }
+
+            // МАРШРУТИЗАЦІЯ ДЛЯ МАЙСТРА ОГОЛОШЕНЬ (Працює і для фото, і для тексту)
+            if (session != null && createAdPostController.isCreatePostWizardState(session.getState())) {
                 try {
-                    boolean consumed = createProfileController.handleText(chatId, text, textSession);
+                    createAdPostController.handle(update, session, botOut);
+
+                    // Якщо це було текстове повідомлення або фото, видаляємо його для чистоти чату
+                    deleteMessage(chatId, update.getMessage().getMessageId());
+                    return;
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
+            // Маршрутизація тексту або контакту до wizard-опитувальника анкети.
+            UserSession profileSession = userSessions.get(chatId);
+            if (profileSession != null && CreateProfileController.isWizardState(profileSession.getState())) {
+                try {
+                    boolean consumed = createProfileController.handleMessage(update, profileSession);
                     if (consumed) {
                         // Прибираємо повідомлення користувача, щоб чат лишався охайним
                         deleteMessage(chatId, update.getMessage().getMessageId());
@@ -141,6 +167,8 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
                     e.printStackTrace();
                 }
             }
+
+
         }
         // 2. Обробка натискань на кнопки (CallbackQuery)
         else if (update.hasCallbackQuery()) {
@@ -178,6 +206,11 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
 
             handleCallback(update, chatId, messageId, callbackData, session);
         }
+    }
+
+    @Override
+    public void onUpdatesReceived(List<Update> updates) {
+        super.onUpdatesReceived(updates);
     }
 
     /**
@@ -219,8 +252,13 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
                 searchAdsController.handle(update, session, botOut);
                 return;
             }
-            if (data.equals("MENU_CREATE_AD")) {
-                createAdController.handle(update, session, botOut);
+
+            // 4. Меню та кроки "Створити оголошення" (ДОДАНО ПЕРЕВІРКУ ПРЕФІКСА "cp_")
+            // Якщо це меню запуску АБО будь-який крок майстра (починається з cp_)
+            if (data.equals("MENU_CREATE_AD_POST") || data.startsWith("cp_")) {
+                createAdPostController.handle(update, session, botOut);
+                //deleteMessage(chatId, messageId);
+                //clearMarkup(chatId,messageId);
                 return;
             }
 
@@ -311,17 +349,11 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
     /**
      * Допоміжний метод для повного видалення повідомлення з чату.
      */
-    private void deleteMessage(long chatId, int messageId) {
-        try {
-            org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage deleteMessage =
-                    new org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage();
-            deleteMessage.setChatId(String.valueOf(chatId));
-            deleteMessage.setMessageId(messageId);
-            execute(deleteMessage);
-        } catch (Exception e) {
-            // Іноді повідомлення не вдається видалити (наприклад, якщо воно старше за 48 годин),
-            // тому просто ігноруємо помилку, щоб бот не падав.
-            botOut.println("Не вдалося видалити повідомлення: " + e.getMessage());
-        }
+    @Override
+    public void deleteMessage(long chatId, int messageId) throws TelegramApiException {
+        DeleteMessage del = new DeleteMessage();
+        del.setChatId(String.valueOf(chatId));
+        del.setMessageId(messageId);
+        execute(del);
     }
 }

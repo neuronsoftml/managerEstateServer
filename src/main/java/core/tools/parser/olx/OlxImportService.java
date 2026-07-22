@@ -50,7 +50,7 @@ public class OlxImportService {
      * @param log                потік для виведення логів (наприклад, у консоль або GUI)
      * @param onlyNew            якщо {@code true}, зчитуються лише ті файли, яких ще немає в реєстрі бази даних
      */
-    public static void importFromJson(String postsDir, PrintStream log, boolean onlyNew) {
+    public static boolean importFromJson(String postsDir, PrintStream log, boolean onlyNew) {
         log.println("\n=== ЕТАП 3: Імпорт у базу даних SQLite ===");
 
         // Гарантуємо існування потрібних таблиць у БД перед початком запису
@@ -66,7 +66,7 @@ public class OlxImportService {
             OlxStorageService.updateStateStatus(true, false);
             // Навіть якщо нових немає, перевіряємо, чи не залишилось старих невідправлених у БД
             sendUnsentToTelegram(log, true);
-            return;
+            return true;
         }
 
         log.printf("📥 Починаємо імпорт %d оголошень...%n", announcements.size());
@@ -107,6 +107,7 @@ public class OlxImportService {
 
         // Запускаємо фонову відправку накопичених невідправлених оголошень у Telegram
         sendUnsentToTelegram(log, true);
+        return failed == 0;
     }
 
     /**
@@ -206,4 +207,3 @@ public class OlxImportService {
     }
 
 }
-

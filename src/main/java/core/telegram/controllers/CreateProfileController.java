@@ -62,8 +62,12 @@ public class CreateProfileController implements BotController {
      * @return true, якщо повідомлення користувача було "спожите" wizard'ом
      * (і його можна безпечно видалити з чату для охайності)
      */
-    public boolean handleText(long chatId, String text, UserSession session) throws Exception {
-        return profileWizard.handleText(chatId, text, session);
+    public boolean handleMessage(Update update, UserSession session) throws Exception {
+        long chatId = update.getMessage().getChatId();
+        if (update.getMessage().hasContact()) {
+            return profileWizard.handleContact(chatId, update.getMessage().getContact().getPhoneNumber(), session);
+        }
+        return update.getMessage().hasText() && profileWizard.handleText(chatId, update.getMessage().getText(), session);
     }
 
     /** Чи перебуває сесія користувача всередині кроків wizard-опитувальника анкети. */

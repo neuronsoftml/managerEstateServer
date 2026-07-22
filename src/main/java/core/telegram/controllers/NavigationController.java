@@ -83,7 +83,7 @@ public class NavigationController implements BotController {
 
         Map<String, String> mainMenuButtons = new LinkedHashMap<>();
         mainMenuButtons.put("🔍 Пошук нерухомості", "MENU_SEARCH_ADS");
-        mainMenuButtons.put("🏗 Створити оголошення \n (здати квартиру)", "MENU_CREATE_AD");
+        mainMenuButtons.put("🏗 Створити оголошення \n", "MENU_CREATE_AD_POST");
         mainMenuButtons.put("📝 Створити анкету \n (шукаю житло в оренду)", "MENU_CREATE_PROFILE");
 
         message.setReplyMarkup(InlineKeyboardFactory.createVertical(mainMenuButtons, null, null));

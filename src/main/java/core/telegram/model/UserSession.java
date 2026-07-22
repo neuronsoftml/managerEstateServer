@@ -1,9 +1,6 @@
 package core.telegram.model;
 
-import model.AnnouncementCategory;
-import model.City;
-import model.DealType;
-import model.PropertyType;
+import model.*;
 
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -94,6 +91,27 @@ public class UserSession {
      */
     private boolean profileEditMode = false;
 
+    // ── Секція Wizard-майстра "Створити оголошення" ──────────────────────────
+
+    /** Чернетка оголошення, що наповнюється крок за кроком через {@code CreatePostWizardController}. */
+    private CreatePostDraft createPostDraft = new CreatePostDraft();
+
+    /**
+     * Статус режиму швидкого редагування анкети створення оголошення.
+     * {@code true} — якщо користувач повернувся на конкретний крок з екрану резюме
+     * (натиснувши "Редагувати"). Після відповіді бот одразу повертає користувача
+     * назад на екран резюме, а не продовжує звичайну послідовність кроків.
+     */
+    private boolean createPostEditMode = false;
+
+    /** ID останнього надісланого ботом повідомлення майстра створення оголошення (для inline-редагування). */
+    private int createPostMessageId;
+
+
+    private int lastTemporaryMessageId;
+
+    private boolean isEditMenuOpen = false;
+
     /**
      * Конструктор для ініціалізації нової сесії з певним стартовим станом.
      *
@@ -164,4 +182,25 @@ public class UserSession {
 
     public boolean isProfileEditMode() { return profileEditMode; }
     public void setProfileEditMode(boolean profileEditMode) { this.profileEditMode = profileEditMode; }
+
+    // ── Геттери та Сеттери для Wizard-майстра "Створити оголошення" ──────────
+
+    public CreatePostDraft getCreatePostDraft() { return createPostDraft; }
+    public void setCreatePostDraft(CreatePostDraft createPostDraft) { this.createPostDraft = createPostDraft; }
+
+    public boolean isCreatePostEditMode() { return createPostEditMode; }
+    public void setCreatePostEditMode(boolean createPostEditMode) { this.createPostEditMode = createPostEditMode; }
+
+    public int getCreatePostMessageId() { return createPostMessageId; }
+    public void setCreatePostMessageId(int createPostMessageId) { this.createPostMessageId = createPostMessageId; }
+    public int getLastTemporaryMessageId() { return lastTemporaryMessageId; }
+    public void setLastTemporaryMessageId(int lastTemporaryMessageId) { this.lastTemporaryMessageId = lastTemporaryMessageId; }
+
+    public boolean isEditMenuOpen() {
+        return isEditMenuOpen;
+    }
+
+    public void setEditMenuOpen(boolean editMenuOpen) {
+        isEditMenuOpen = editMenuOpen;
+    }
 }

@@ -1,7 +1,6 @@
 package model;
 
 import core.tools.parser.olx.AnnouncementParamParser;
-import core.tools.parser.olx.ParserPrice;
 import core.tools.parser.olx.PriceParser;
 import core.tools.parser.olx.PriceResult;
 

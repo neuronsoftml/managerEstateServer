@@ -3,14 +3,19 @@ package core.tools.parser.olx;
 import model.ProjectFolder;
 import model.Announcement;
 import java.io.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import core.serverDB.sqlite.ProjectDatabaseService;
 
 /**
  * Сервіс управління локальним файловим сховищем для оголошень OLX.
@@ -294,6 +299,155 @@ public class OlxStorageService {
     }
 
     /**
+     * Після успішного імпорту перевіряє усі JSON-деталі OLX. Для сторінки, яку OLX
+     * підтвердив як видалену (404/410), синхронно прибирає запис із SQLite, ID з
+     * all_ids.json і сам файл деталей. Помилки мережі не є підставою для видалення.
+     */
+    public static synchronized String cleanupBrokenDetails(PrintStream log) {
+        Path detailsDir = Paths.get(POSTS_DIR);
+        if (!Files.isDirectory(detailsDir)) return "Папку olx_details не знайдено.";
+
+        List<BrokenDetail> broken = new ArrayList<>();
+        int checked = 0;
+        int skipped = 0;
+
+        try (var files = Files.list(detailsDir)) {
+            for (Path file : files.filter(path -> {
+                String name = path.getFileName().toString();
+                return name.startsWith("post_") && name.endsWith(".json");
+            }).toList()) {
+                Announcement announcement = OlxDetailsParser.parseFile(file.toFile());
+                if (announcement == null || announcement.getId() == null || announcement.getId().isBlank()
+                        || announcement.getUrl() == null || announcement.getUrl().isBlank()) {
+                    skipped++;
+                    log.println("⚠️ [Cleanup] Пропущено некоректний JSON: " + file.getFileName());
+                    continue;
+                }
+
+                checked++;
+                if (isUrlConfirmedBroken(announcement.getUrl())) {
+                    broken.add(new BrokenDetail(announcement.getId(), file));
+                }
+            }
+        } catch (IOException e) {
+            return "Помилка читання olx_details: " + e.getMessage();
+        }
+
+        if (broken.isEmpty()) {
+            return String.format("Перевірено JSON: %d. Битих посилань не знайдено%s.", checked,
+                    skipped == 0 ? "" : "; пропущено некоректних: " + skipped);
+        }
+
+        Set<String> ids = new LinkedHashSet<>();
+        for (BrokenDetail detail : broken) ids.add(detail.id());
+        if (!ProjectDatabaseService.deleteOlxAnnouncements(ids)) {
+            return "Помилка SQLite: файли та all_ids.json не змінено.";
+        }
+
+        int removedFromRegistry;
+        try {
+            removedFromRegistry = removeIdsFromRegistry(ids);
+        } catch (IOException e) {
+            return "Записи видалено з SQLite, але не вдалося оновити all_ids.json: " + e.getMessage();
+        }
+
+        int deletedFiles = 0;
+        for (BrokenDetail detail : broken) {
+            try {
+                if (Files.deleteIfExists(detail.file())) deletedFiles++;
+            } catch (IOException e) {
+                log.println("⚠️ [Cleanup] Не вдалося видалити " + detail.file().getFileName() + ": " + e.getMessage());
+            }
+        }
+        return String.format("Перевірено JSON: %d. Видалено битих: %d (SQLite), %d (all_ids), %d файлів%s.",
+                checked, ids.size(), removedFromRegistry, deletedFiles,
+                skipped == 0 ? "" : "; пропущено некоректних: " + skipped);
+    }
+
+    private static boolean isUrlConfirmedBroken(String urlString) {
+        try {
+            HttpURLConnection connection = (HttpURLConnection) new URL(urlString).openConnection();
+            connection.setInstanceFollowRedirects(true);
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(5_000);
+            connection.setReadTimeout(5_000);
+            int status = connection.getResponseCode();
+            connection.disconnect();
+            return status == HttpURLConnection.HTTP_NOT_FOUND || status == HttpURLConnection.HTTP_GONE;
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    /** Перезаписує реєстр без зазначених ID, зберігаючи тіла решти JSON-об'єктів. */
+    private static int removeIdsFromRegistry(Set<String> idsToRemove) throws IOException {
+        Path registry = Paths.get(ALL_IDS_FILE);
+        if (!Files.exists(registry)) return 0;
+
+        String content = Files.readString(registry, StandardCharsets.UTF_8);
+        List<String> entries = extractTopLevelAds(content);
+        List<String> kept = new ArrayList<>();
+        int removed = 0;
+
+        for (String entry : entries) {
+            Matcher idMatcher = Pattern.compile("\\\"id\\\"\\s*:\\s*\\\"((?:[^\\\"\\\\]|\\\\.)*)\\\"").matcher(entry);
+            if (idMatcher.find() && idsToRemove.contains(unescapeJson(idMatcher.group(1)))) {
+                removed++;
+            } else {
+                kept.add(entry);
+            }
+        }
+
+        if (removed == 0) return 0;
+        String json = "{\n  \"total\": " + kept.size() + ",\n  \"generated_at\": \"" + LocalDateTime.now() + "\",\n  \"ads\": [\n"
+                + String.join(",\n", kept) + "\n  ]\n}";
+        Path temporary = Files.createTempFile(registry.getParent(), "all_ids-", ".json");
+        Files.writeString(temporary, json, StandardCharsets.UTF_8);
+        try {
+            Files.move(temporary, registry, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Files.move(temporary, registry, StandardCopyOption.REPLACE_EXISTING);
+        }
+        return removed;
+    }
+
+    /** Витягує об'єкти верхнього рівня з масиву ads без небезпечного regex-парсингу вкладених рядків. */
+    private static List<String> extractTopLevelAds(String json) {
+        int adsIndex = json.indexOf("\"ads\"");
+        int arrayStart = adsIndex < 0 ? -1 : json.indexOf('[', adsIndex);
+        if (arrayStart < 0) return List.of();
+
+        List<String> entries = new ArrayList<>();
+        int objectStart = -1;
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = arrayStart + 1; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '"') inString = false;
+                continue;
+            }
+            if (c == '"') inString = true;
+            else if (c == '{') {
+                if (depth++ == 0) objectStart = i;
+            } else if (c == '}' && --depth == 0 && objectStart >= 0) {
+                entries.add(json.substring(objectStart, i + 1));
+                objectStart = -1;
+            } else if (c == ']' && depth == 0) break;
+        }
+        return entries;
+    }
+
+    private static String unescapeJson(String value) {
+        return value.replace("\\\"", "\"").replace("\\\\", "\\");
+    }
+
+    private record BrokenDetail(String id, Path file) { }
+
+    /**
      * Екранує спецсимволи JSON у рядках для запобігання пошкодженню файлів під час ручного складання JSON.
      * Замінює зворотні слеші, лапки, переноси рядків і знаки табуляції на безпечні послідовності.
      *
@@ -307,5 +461,25 @@ public class OlxStorageService {
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .replace("\t", "\\t");
+    }
+
+
+
+    public static boolean chekRedyBDTest() throws IOException {
+        File meta = new File(META_FILE);
+
+        String content = Files.readString(meta.toPath(), StandardCharsets.UTF_8);
+
+        // Витягуємо параметри за допомогою регулярних виразів
+        Matcher mTime = Pattern.compile("\"last_update\"\\s*:\\s*\"([^\"]+)\"").matcher(content);
+        Matcher mDownload = Pattern.compile("\"is_download_complete\"\\s*:\\s*(true|false)").matcher(content);
+        Matcher mPublish = Pattern.compile("\"is_publication_complete\"\\s*:\\s*(true|false)").matcher(content);
+
+        LocalDateTime lastUpdate = mTime.find() ? LocalDateTime.parse(mTime.group(1), DT) : LocalDateTime.MIN;
+        boolean downloadComplete = mDownload.find() && Boolean.parseBoolean(mDownload.group(1));
+        boolean publishComplete = mPublish.find() && Boolean.parseBoolean(mPublish.group(1));
+
+        if(!downloadComplete && !publishComplete) return false;
+        else return true;
     }
 }

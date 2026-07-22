@@ -164,7 +164,12 @@ public class UpdateBaseController {
                         + ProjectFolder.OLX_DETAILS.getName();
 
                 // Крок 2: Імпорт отриманих JSON в локальну базу даних SQLite та автоматичний виклик Telegram-транслятора
-                OlxImportService.importFromJson(postsDir, olxOut, true);
+                boolean imported = OlxImportService.importFromJson(postsDir, olxOut, true);
+                if (imported) {
+                    startBrokenOlxCleanupTask(olxOut);
+                } else {
+                    olxOut.println("⚠️ Імпорт завершився з помилками — очищення битих оголошень пропущено.");
+                }
             } else {
                 olxOut.println("⏭ Парсинг повернув false (помилка). Позначаємо завантаження завершеним без нових даних.");
                 // Оновлюємо статус-файл для запобігання вічного циклу помилок
@@ -208,5 +213,17 @@ public class UpdateBaseController {
         if (masterSchedulerThread != null) {
             masterSchedulerThread.interrupt();
         }
+    }
+
+    /**
+     * Запускає фоновий потік для очищення бази даних від битих посилань.
+     * @param log потік виведення логів
+     */
+    private void startBrokenOlxCleanupTask(PrintStream log) {
+        new Thread(() -> {
+            log.println("🧹 [Cleanup] Перевірка JSON-деталей OLX на биті посилання...");
+            String report = OlxStorageService.cleanupBrokenDetails(log);
+            log.println("🧹 [Cleanup] Результат: " + report);
+        }, "OLX-Details-Cleanup-Task").start();
     }
 }

@@ -5,8 +5,11 @@ import model.Announcement;
 import model.AnnouncementCategory;
 import model.City;
 import core.telegram.model.UserSession;
+import model.CreatePostDraft;
 
 
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -15,6 +18,7 @@ import java.sql.Statement;
 import java.sql.Types;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -151,6 +155,47 @@ public class ProjectDatabaseService {
             try {
                 stmt.execute("ALTER TABLE user_profiles ADD COLUMN phone_number TEXT NOT NULL DEFAULT ''");
             } catch (SQLException ignored) { /* колонка вже існує */ }
+
+            // 5.1 Таблиця оголошень, створених самими користувачами через CreatePostWizardController
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS user_created_posts (
+                    payment_code        TEXT PRIMARY KEY,
+                    telegram_id         INTEGER NOT NULL,
+                    deal_type           TEXT,
+                    property_type       TEXT,
+                    market_type         TEXT,
+                    title               TEXT,
+                    price_value         REAL,
+                    price_currency      TEXT,
+                    location            TEXT,
+                    land_area           REAL,
+                    rooms               INTEGER,
+                    total_area          REAL,
+                    floor               INTEGER,
+                    total_floors        INTEGER,
+                    seller_type         TEXT,
+                    duration_days       INTEGER,
+                    description         TEXT,
+                    phone_number        TEXT,
+                    listing_fee_uah     INTEGER,
+                    payment_status      TEXT NOT NULL DEFAULT 'PENDING',
+                    created_at          TEXT    DEFAULT (datetime('now'))
+                )
+            """);
+
+            // 5.2 Фотографії, прикріплені до створеного користувачем оголошення (1:N)
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS user_created_post_photos (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    payment_code    TEXT NOT NULL,
+                    photo_file_id   TEXT NOT NULL,
+                    sort_order      INTEGER DEFAULT 0,
+                    FOREIGN KEY (payment_code) REFERENCES user_created_posts(payment_code)
+                        ON DELETE CASCADE
+                )
+            """);
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_user_posts_status ON user_created_posts(payment_status)");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_user_posts_telegram ON user_created_posts(telegram_id)");
 
             // 6. Створення індексів для оптимізації вибірок за основними фільтрами пошуку
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_olx_city          ON olx_announcements(city)");
@@ -291,6 +336,36 @@ public class ProjectDatabaseService {
     }
 
     /**
+     * Видаляє оголошення OLX пакетом у межах однієї транзакції.
+     * Пов'язані фото й параметри прибираються каскадно через зовнішні ключі.
+     *
+     * @return {@code true}, якщо транзакція успішно зафіксована
+     */
+    public static synchronized boolean deleteOlxAnnouncements(Collection<String> ids) {
+        if (ids == null || ids.isEmpty()) return true;
+
+        Connection conn = DatabaseManager.getConnection();
+        try {
+            boolean autoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM olx_announcements WHERE id = ?")) {
+                for (String id : ids) {
+                    ps.setString(1, id);
+                    ps.addBatch();
+                }
+                ps.executeBatch();
+            }
+            conn.commit();
+            conn.setAutoCommit(autoCommit);
+            return true;
+        } catch (SQLException e) {
+            try { conn.rollback(); } catch (SQLException ignored) { }
+            System.err.println("❌ deleteOlxAnnouncements: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Повертає список оголошень, які ще не були опубліковані у Telegram-каналі.
      * Використовується демоном розсилки для відправки накопичених нових записів.
      *
@@ -411,6 +486,125 @@ public class ProjectDatabaseService {
 
         } catch (SQLException e) {
             System.err.println("❌ Помилка збереження анкети telegram_id=" + form.getTelegramId() + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    // ── РОБОТА З ОГОЛОШЕННЯМИ, СТВОРЕНИМИ КОРИСТУВАЧАМИ (CreatePostWizardController) ──
+
+    /**
+     * Зберігає завершену анкету майстра "Створити оголошення" у таблицю {@code user_created_posts}
+     * разом із прикріпленими фотографіями, у межах однієї транзакції.
+     * <p>
+     * Первинним ключем виступає унікальний {@code paymentCode} чернетки (6-символьний код),
+     * що згенерований на кроці формування екрану резюме — саме цей код користувач має вказати
+     * в призначенні платежу, і саме за ним надалі звіряється надходження оплати.
+     * </p>
+     *
+     * @param telegramId telegram-ідентифікатор користувача, який створив оголошення
+     * @param draft      заповнена чернетка {@link CreatePostDraft} з кодом платежу та статусом {@code PENDING}
+     * @return {@code true}, якщо запис і фото збережено без помилок, інакше {@code false}
+     */
+    public static boolean saveUserCreatedPost(long telegramId, CreatePostDraft draft) {
+        if (draft == null || draft.getPaymentCode() == null || draft.getPaymentCode().isBlank()) {
+            System.err.println("❌ saveUserCreatedPost: відсутній paymentCode у чернетці.");
+            return false;
+        }
+
+        String sql = """
+            INSERT OR REPLACE INTO user_created_posts
+                (payment_code, telegram_id, deal_type, property_type, market_type, title,
+                 price_value, price_currency, location, land_area, rooms,
+                 total_area, floor, total_floors, seller_type, duration_days, description,
+                 phone_number, listing_fee_uah, payment_status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """;
+
+        try (Connection conn = DatabaseManager.getConnection()) {
+            conn.setAutoCommit(false);
+
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, draft.getPaymentCode());
+                ps.setLong  (2, telegramId);
+                ps.setString(3, draft.getDealType()     != null ? draft.getDealType().name()     : null);
+                ps.setString(4, draft.getPropertyType()  != null ? draft.getPropertyType().name() : null);
+                ps.setString(5, draft.getMarketType()    != null ? draft.getMarketType().name()   : null);
+                ps.setString(6, draft.getTitle());
+
+                if (draft.getPrice() != null) {
+                    ps.setDouble(7, draft.getPrice().doubleValue());
+                } else {
+                    ps.setNull(7, Types.REAL);
+                }
+                ps.setString(8, draft.getCurrency() != null ? draft.getCurrency().getLabel() : null);
+                ps.setString(9, draft.getLocation());
+
+                if (draft.getLandArea() != null) ps.setDouble(10, draft.getLandArea()); else ps.setNull(10, Types.REAL);
+                if (draft.getRooms()    != null) ps.setInt   (11, draft.getRooms());   else ps.setNull(11, Types.INTEGER);
+                if (draft.getTotalArea()!= null) ps.setDouble(12, draft.getTotalArea()); else ps.setNull(12, Types.REAL);
+                if (draft.getFloor()    != null) ps.setInt   (13, draft.getFloor());   else ps.setNull(13, Types.INTEGER);
+                if (draft.getTotalFloors() != null) ps.setInt(14, draft.getTotalFloors()); else ps.setNull(14, Types.INTEGER);
+
+                ps.setString(15, draft.getSellerType() != null ? draft.getSellerType().name() : null);
+                if (draft.getDurationDays() != null) ps.setInt(16, draft.getDurationDays()); else ps.setNull(16, Types.INTEGER);
+                ps.setString(17, draft.getDescription());
+                ps.setString(18, draft.getPhoneNumber());
+                ps.setInt   (19, draft.calculateListingFeeUah());
+                ps.setString(20, draft.getPaymentStatus() != null ? draft.getPaymentStatus().name() : "PENDING");
+
+                ps.executeUpdate();
+            }
+
+            try (PreparedStatement del = conn.prepareStatement(
+                    "DELETE FROM user_created_post_photos WHERE payment_code = ?")) {
+                del.setString(1, draft.getPaymentCode());
+                del.executeUpdate();
+            }
+            saveUserCreatedPostPhotos(draft, conn);
+
+            conn.commit();
+            return true;
+
+        } catch (SQLException e) {
+            System.err.println("❌ Помилка збереження оголошення користувача code=" + draft.getPaymentCode() + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Пакетно зберігає фотографії (Telegram {@code file_id}), прикріплені до створеного користувачем оголошення.
+     */
+    private static void saveUserCreatedPostPhotos(CreatePostDraft draft, Connection conn) throws SQLException {
+        if (draft.getPhotoFileIds() == null || draft.getPhotoFileIds().isEmpty()) return;
+
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO user_created_post_photos (payment_code, photo_file_id, sort_order) VALUES (?,?,?)")) {
+            for (int i = 0; i < draft.getPhotoFileIds().size(); i++) {
+                ps.setString(1, draft.getPaymentCode());
+                ps.setString(2, draft.getPhotoFileIds().get(i));
+                ps.setInt   (3, i);
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+    }
+
+    /**
+     * Позначає оголошення користувача (за кодом платежу) як оплачене.
+     * Викликається адміністратором вручну (наприклад, з окремої адмін-команди) після
+     * звірки надходження коштів з призначенням платежу, що містить {@code paymentCode}.
+     *
+     * @param paymentCode 6-символьний код платежу, згенерований для чернетки
+     * @return {@code true}, якщо рядок знайдено й оновлено
+     */
+    public static boolean markUserPostAsPaid(String paymentCode) {
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement ps = conn.prepareStatement(
+                     "UPDATE user_created_posts SET payment_status = 'PAID' WHERE payment_code = ?")) {
+            ps.setString(1, paymentCode);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ markUserPostAsPaid code=" + paymentCode + ": " + e.getMessage());
             return false;
         }
     }
@@ -625,6 +819,81 @@ public class ProjectDatabaseService {
 
         } catch (SQLException e) {
             System.err.println("❌ Помилка додавання групи " + groupName + " на моніторинг: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Виконує повне сканування таблиці оголошень та видаляє записи, посилання на які стали неактивними (повертають 404).
+     * <p>
+     * Метод ітерує по всій таблиці {@code olx_announcements}, перевіряє доступність кожного URL та
+     * формує пакетний запит на видалення. Використовує каскадне видалення через зовнішні ключі,
+     * тому фото та параметри оголошення видаляються автоматично.
+     * </p>
+     *
+     * @return звіт про виконання у вигляді рядка з кількістю перевірених та видалених записів,
+     *         або повідомлення про помилку у разі виникнення {@link SQLException}
+     */
+    public static String cleanupBrokenLinks() {
+        int checkedCount = 0;
+        int deletedCount = 0;
+        String sqlSelect = "SELECT id, url FROM olx_announcements";
+        String sqlDelete = "DELETE FROM olx_announcements WHERE id = ?";
+
+        try (Connection conn = DatabaseManager.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sqlSelect)) {
+
+            List<String> idsToDelete = new ArrayList<>();
+
+            while (rs.next()) {
+                checkedCount++;
+                String id = rs.getString("id");
+                String url = rs.getString("url");
+
+                if (!isUrlAlive(url)) {
+                    idsToDelete.add(id);
+                    deletedCount++;
+                }
+            }
+
+            // Видалення знайдених "битих" записів
+            try (PreparedStatement ps = conn.prepareStatement(sqlDelete)) {
+                for (String id : idsToDelete) {
+                    ps.setString(1, id);
+                    ps.executeUpdate();
+                }
+            }
+
+        } catch (SQLException e) {
+            return "Помилка при очищенні БД: " + e.getMessage();
+        }
+
+        return String.format("Перевірено елементів: %d. Видалено битих посилань: %d.", checkedCount, deletedCount);
+    }
+
+    /**
+     * Перевіряє актуальність посилання за допомогою HTTP GET-запиту.
+     * <p>
+     * Встановлює ліміт часу (timeout) 5 секунд для з'єднання та читання відповіді,
+     * щоб уникнути зависання потоку при тривалих відповідях сервера.
+     * </p>
+     *
+     * @param urlString повний URL оголошення для перевірки
+     * @return {@code true}, якщо сервер відповів кодом відмінним від 404;
+     *         {@code false}, якщо отримано 404 або виникла мережева помилка (таймаут, DNS тощо)
+     */
+    private static boolean isUrlAlive(String urlString) {
+        try {
+            URL url = new URL(urlString);
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(5000); // 5 секунд на з'єднання
+            connection.setReadTimeout(5000);
+            int responseCode = connection.getResponseCode();
+            return responseCode != 404;
+        } catch (Exception e) {
+            // Вважаємо посилання "битим" у разі виникнення будь-яких мережевих виключень
             return false;
         }
     }

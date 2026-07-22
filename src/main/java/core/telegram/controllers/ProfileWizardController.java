@@ -8,8 +8,13 @@ import model.City;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageReplyMarkup;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
+import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardRemove;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardButton;
+import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 import core.serverDB.sqlite.ProjectDatabaseService;
 
 import java.util.ArrayList;
@@ -62,6 +67,7 @@ public class ProfileWizardController {
      * @throws Exception при помилках взаємодії з Telegram API
      */
     public void startWizard(long chatId, int messageId, UserSession session) throws Exception {
+        clearTemporaryMessage(chatId, session);
         session.setProfileDraft(new TenantApplicationForm());
         session.getSelectedDistricts().clear();
         session.setAwaitingChildrenDetails(false);
@@ -228,10 +234,11 @@ public class ProfileWizardController {
             case PROFILE_WAITING_PHONE -> {
                 String phone = normalizePhone(text);
                 if (phone == null) {
-                    renderPhoneStep(chatId, msgId, "⚠️ Не схоже на номер телефону. Введіть, будь ласка, у форматі +380XXXXXXXXX.\n\n");
+                    renderPhoneStep(chatId, session, "⚠️ Не схоже на номер телефону. Скористайтеся кнопкою нижче.\n\n");
                     return true;
                 }
                 form.setPhoneNumber(phone);
+                removeContactKeyboard(chatId, session);
                 advance(session, chatId, msgId, BotState.PROFILE_WAITING_BUDGET);
                 return true;
             }
@@ -283,6 +290,22 @@ public class ProfileWizardController {
         }
     }
 
+    /** Обробляє контакт, надісланий системною кнопкою Telegram на кроці телефону. */
+    public boolean handleContact(long chatId, String phoneNumber, UserSession session) throws Exception {
+        if (session.getState() != BotState.PROFILE_WAITING_PHONE) return false;
+
+        String phone = normalizePhone(phoneNumber);
+        if (phone == null) {
+            renderPhoneStep(chatId, session, "⚠️ Не вдалося прочитати номер. Спробуйте ще раз.\n\n");
+            return true;
+        }
+
+        session.getProfileDraft().setPhoneNumber(phone);
+        removeContactKeyboard(chatId, session);
+        advance(session, chatId, session.getWizardMessageId(), BotState.PROFILE_WAITING_BUDGET);
+        return true;
+    }
+
     // ==========================================
     // --- ДОПОМІЖНЕ: ПЕРЕХІД МІЖ КРОКАМИ ---
     // ==========================================
@@ -311,7 +334,7 @@ public class ProfileWizardController {
     private void renderStep(BotState state, long chatId, int messageId, UserSession session) throws Exception {
         switch (state) {
             case PROFILE_WAITING_NAME -> renderNameStep(chatId, messageId, "");
-            case PROFILE_WAITING_PHONE -> renderPhoneStep(chatId, messageId, "");
+            case PROFILE_WAITING_PHONE -> renderPhoneStep(chatId, session, "");
             case PROFILE_WAITING_BUDGET -> renderBudgetStep(chatId, messageId, "");
             case PROFILE_WAITING_DEPOSIT -> renderDepositStep(chatId, messageId);
             case PROFILE_WAITING_COMMISSION -> renderCommissionStep(chatId, messageId);
@@ -339,9 +362,9 @@ public class ProfileWizardController {
         edit(chatId, messageId, prefix + "👋 Як до вас звертатися? Введіть ваше ім'я:", cancelOnlyKeyboard());
     }
 
-    private void renderPhoneStep(long chatId, int messageId, String prefix) throws Exception {
-        edit(chatId, messageId, prefix + "📱 Вкажіть, будь ласка, ваш контактний номер телефону " +
-                "(наприклад: +380971234567):", cancelOnlyKeyboard());
+    private void renderPhoneStep(long chatId, UserSession session, String prefix) throws Exception {
+        try { bot.clearInlineKeyboard(chatId, session.getWizardMessageId()); } catch (Exception ignored) { }
+        sendPhoneRequest(chatId, prefix + "📱 Надішліть, будь ласка, ваш контактний номер телефону кнопкою нижче.", session);
     }
 
     private void renderBudgetStep(long chatId, int messageId, String prefix) throws Exception {
@@ -598,6 +621,7 @@ public class ProfileWizardController {
      * та очищує кнопки під резюме анкетних даних для запобігання подвійних кліків.
      */
     private void saveProfile(long chatId, int messageId, UserSession session) throws Exception {
+        clearTemporaryMessage(chatId, session);
         TenantApplicationForm f = session.getProfileDraft();
         f.setTelegramId(chatId);
 
@@ -642,6 +666,7 @@ public class ProfileWizardController {
      * та повертає статус користувача на головне меню.
      */
     private void cancelWizard(long chatId, int messageId, UserSession session) throws Exception {
+        removeContactKeyboard(chatId, session);
         session.setProfileDraft(new TenantApplicationForm());
         session.getSelectedDistricts().clear();
         session.setAwaitingChildrenDetails(false);
@@ -674,6 +699,51 @@ public class ProfileWizardController {
         edit.setReplyMarkup(markup);
 
         bot.executeMethod(edit);
+    }
+
+    /**
+     * ReplyKeyboardMarkup не можна додати через editMessageText, тому запит контакту
+     * завжди надсилається новим повідомленням, а його ID зберігається в сесії.
+     */
+    private void sendPhoneRequest(long chatId, String text, UserSession session) throws Exception {
+        clearTemporaryMessage(chatId, session);
+
+        KeyboardButton contactButton = new KeyboardButton("📱 Надіслати номер телефону");
+        contactButton.setRequestContact(true);
+        KeyboardRow row = new KeyboardRow();
+        row.add(contactButton);
+
+        ReplyKeyboardMarkup keyboard = new ReplyKeyboardMarkup();
+        keyboard.setKeyboard(List.of(row));
+        keyboard.setResizeKeyboard(true);
+        keyboard.setOneTimeKeyboard(true);
+
+        SendMessage message = new SendMessage(String.valueOf(chatId), text);
+        message.setReplyMarkup(keyboard);
+        Message sent = bot.executeMethod(message);
+        if (sent != null) session.setLastTemporaryMessageId(sent.getMessageId());
+    }
+
+    /** Прибирає системну клавіатуру та службове повідомлення після завершення кроку. */
+    private void removeContactKeyboard(long chatId, UserSession session) throws Exception {
+        if (session.getLastTemporaryMessageId() == 0) return;
+
+        SendMessage remove = new SendMessage(String.valueOf(chatId), "✅ Номер телефону отримано.");
+        ReplyKeyboardRemove markup = new ReplyKeyboardRemove();
+        markup.setRemoveKeyboard(true);
+        remove.setReplyMarkup(markup);
+        Message sent = bot.executeMethod(remove);
+        clearTemporaryMessage(chatId, session);
+        if (sent != null) {
+            try { bot.deleteMessage(chatId, sent.getMessageId()); } catch (Exception ignored) { }
+        }
+    }
+
+    private void clearTemporaryMessage(long chatId, UserSession session) {
+        int messageId = session.getLastTemporaryMessageId();
+        if (messageId == 0) return;
+        try { bot.deleteMessage(chatId, messageId); } catch (Exception ignored) { }
+        session.setLastTemporaryMessageId(0);
     }
 
     private List<List<InlineKeyboardButton>> cancelOnlyKeyboard() {
