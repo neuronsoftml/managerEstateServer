@@ -1,6 +1,8 @@
 package core.telegram.main;
 
 import core.telegram.controllers.*;
+import core.telegram.SearchNotificationService;
+import core.serverDB.sqlite.ProjectDatabaseService;
 import core.telegram.model.BotState;
 import core.telegram.model.Config;
 
@@ -55,6 +57,9 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
     /** Контролер бізнес-процесу "Створити анкету" (інкапсулює wizard-опитувальник анкети). */
     private final CreateProfileController createProfileController = new CreateProfileController(this);
 
+    /** Керування збереженими фільтрами та персональними сповіщеннями. */
+    private final SettingsController settingsController = new SettingsController(this);
+
 
     /** Потік виведення для логування, налагодження або перенаправлення системних повідомлень бота. */
     private PrintStream botOut;
@@ -67,6 +72,7 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
      */
     public PrivateMainBot(PrintStream botOut) {
         this.botOut = botOut;
+        SearchNotificationService.configure(this);
     }
 
     @Override
@@ -128,15 +134,21 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
 
             // ГОЛОВНИЙ ФІЛЬТР: Перевіряємо підписку
             if (!isUserSubscribed(chatId)) {
+                ProjectDatabaseService.upsertTelegramUser(chatId, false);
                 sendSubscriptionWarning(chatId);
                 return;
             }
+            ProjectDatabaseService.upsertTelegramUser(chatId, true);
 
             // Обробка команд (лише якщо є текст)
             if (update.getMessage().hasText()) {
                 String text = update.getMessage().getText();
                 if (text.equals("/start")) {
                     startWorkflow(chatId);
+                    return;
+                }
+                if (text.equals("/settings")) {
+                    settingsController.show(chatId);
                     return;
                 }
             }
@@ -180,6 +192,7 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
             if (callbackData.equals("CHECK_SUB")) {
                 clearMarkup(chatId, messageId); // видаляємо старе попередження
                 if (isUserSubscribed(chatId)) {
+                    ProjectDatabaseService.upsertTelegramUser(chatId, true);
                     // Якщо тепер підписаний — вітаємо та запускаємо пошук спочатку
                     SendMessage successMsg = new SendMessage();
                     successMsg.setChatId(String.valueOf(chatId));
@@ -188,6 +201,7 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
 
                     startWorkflow(chatId);
                 } else {
+                    ProjectDatabaseService.upsertTelegramUser(chatId, false);
                     // Якщо досі не підписався — знову б'ємо по руках
                     sendSubscriptionWarning(chatId);
                 }
@@ -196,10 +210,12 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
 
             // ЗАХИСТ: Якщо користувач клацає на кнопки СТАРИХ результатів пошуку, але відписався
             if (!isUserSubscribed(chatId)) {
+                ProjectDatabaseService.upsertTelegramUser(chatId, false);
                 clearMarkup(chatId, messageId);
                 sendSubscriptionWarning(chatId);
                 return;
             }
+            ProjectDatabaseService.upsertTelegramUser(chatId, true);
 
             // Отримуємо існуючу сесію або створюємо нову, якщо користувач пише вперше
             UserSession session = userSessions.computeIfAbsent(chatId, k -> new UserSession(BotState.START));
@@ -238,6 +254,11 @@ public class PrivateMainBot extends TelegramLongPollingBot implements TelegramSe
             // конкретному бізнес-процесу, тому обробляється централізовано.
             if (data.equals("BACK_TO_MENU") || data.equals("EXIT_BOT")) {
                 navigationController.handle(update, session, botOut);
+                return;
+            }
+
+            if (data.startsWith("SETTINGS_")) {
+                settingsController.handle(chatId, messageId, data);
                 return;
             }
 

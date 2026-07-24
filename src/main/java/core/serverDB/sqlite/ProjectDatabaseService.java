@@ -4,8 +4,12 @@ import core.tools.PrivatBankRateService;
 import model.Announcement;
 import model.AnnouncementCategory;
 import model.City;
+import model.DealType;
+import model.PropertyType;
 import core.telegram.model.UserSession;
 import model.CreatePostDraft;
+import model.SavedSearchFilter;
+import model.NotificationBatch;
 
 
 import java.net.HttpURLConnection;
@@ -20,6 +24,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Головний сервіс доступу до даних (DAO) для роботи з локальною базою даних SQLite.
@@ -203,6 +208,36 @@ public class ProjectDatabaseService {
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_olx_price         ON olx_announcements(price_value)");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_olx_rooms         ON olx_announcements(rooms_count)");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_olx_sent_telegram ON olx_announcements(sent_to_telegram)");
+
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS telegram_users (
+                    telegram_id INTEGER PRIMARY KEY,
+                    is_subscribed INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT DEFAULT (datetime('now'))
+                )
+            """);
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS saved_search_filters (
+                    telegram_id INTEGER PRIMARY KEY,
+                    deal_type TEXT, property_type TEXT, city TEXT, category TEXT,
+                    rooms INTEGER, rooms_minimum INTEGER NOT NULL DEFAULT 0,
+                    min_price_usd INTEGER, max_price_usd INTEGER,
+                    notifications_enabled INTEGER NOT NULL DEFAULT 1,
+                    last_notified_at TEXT,
+                    updated_at TEXT DEFAULT (datetime('now')),
+                    FOREIGN KEY (telegram_id) REFERENCES telegram_users(telegram_id) ON DELETE CASCADE
+                )
+            """);
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_filters_notifications ON saved_search_filters(notifications_enabled)");
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS pending_notification_batches (
+                    telegram_id INTEGER PRIMARY KEY,
+                    announcement_ids TEXT NOT NULL,
+                    current_offset INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    FOREIGN KEY (telegram_id) REFERENCES telegram_users(telegram_id) ON DELETE CASCADE
+                )
+            """);
 
         } catch (SQLException e) {
             throw new RuntimeException("Помилка створення таблиць: " + e.getMessage(), e);
@@ -730,6 +765,296 @@ public class ProjectDatabaseService {
         }
         return results;
     }
+
+    // ── ЗБЕРЕЖЕНІ ФІЛЬТРИ ТА ПЕРСОНАЛЬНІ СПОВІЩЕННЯ ─────────────────────────
+
+    public static void upsertTelegramUser(long telegramId, boolean subscribed) {
+        String sql = """
+            INSERT INTO telegram_users (telegram_id, is_subscribed, updated_at) VALUES (?, ?, datetime('now'))
+            ON CONFLICT(telegram_id) DO UPDATE SET is_subscribed = excluded.is_subscribed, updated_at = datetime('now')
+        """;
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, telegramId);
+            ps.setBoolean(2, subscribed);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("❌ upsertTelegramUser: " + e.getMessage());
+        }
+    }
+
+    /** Зберігає поточний пошук як єдиний активний фільтр користувача та вмикає сповіщення. */
+    public static boolean saveSearchFilter(long telegramId, UserSession session) {
+        if (session.getSelectedCity() == null || session.getSelectedCategory() == null) return false;
+        upsertTelegramUser(telegramId, true);
+        String sql = """
+            INSERT INTO saved_search_filters
+                (telegram_id, deal_type, property_type, city, category, rooms, rooms_minimum,
+                 min_price_usd, max_price_usd, notifications_enabled, last_notified_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+            ON CONFLICT(telegram_id) DO UPDATE SET
+                deal_type=excluded.deal_type, property_type=excluded.property_type, city=excluded.city,
+                category=excluded.category, rooms=excluded.rooms, rooms_minimum=excluded.rooms_minimum,
+                min_price_usd=excluded.min_price_usd, max_price_usd=excluded.max_price_usd,
+                notifications_enabled=1, last_notified_at=datetime('now'), updated_at=datetime('now')
+        """;
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, telegramId);
+            ps.setString(2, nameOf(session.getSelectedDealType()));
+            ps.setString(3, nameOf(session.getSelectedPropertyType()));
+            ps.setString(4, session.getSelectedCity().name());
+            ps.setString(5, session.getSelectedCategory().name());
+            setNullableInt(ps, 6, session.getSelectedRooms());
+            ps.setBoolean(7, session.isRoomsIsMinimum());
+            setNullableInt(ps, 8, session.getMinPriceUsd());
+            setNullableInt(ps, 9, session.getMaxPriceUsd());
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ saveSearchFilter: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public static Optional<SavedSearchFilter> getSavedSearchFilter(long telegramId) {
+        String sql = "SELECT * FROM saved_search_filters WHERE telegram_id = ?";
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, telegramId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? Optional.of(readSavedFilter(rs)) : Optional.empty();
+            }
+        } catch (SQLException e) {
+            System.err.println("❌ getSavedSearchFilter: " + e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    public static List<SavedSearchFilter> getEnabledSubscribedFilters() {
+        List<SavedSearchFilter> filters = new ArrayList<>();
+        String sql = """
+            SELECT f.* FROM saved_search_filters f
+            JOIN telegram_users u ON u.telegram_id = f.telegram_id
+            WHERE f.notifications_enabled = 1 AND u.is_subscribed = 1
+        """;
+        try (Connection conn = DatabaseManager.getConnection(); Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) filters.add(readSavedFilter(rs));
+        } catch (SQLException e) {
+            System.err.println("❌ getEnabledSubscribedFilters: " + e.getMessage());
+        }
+        return filters;
+    }
+
+    public static boolean setNotificationsEnabled(long telegramId, boolean enabled) {
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(
+                "UPDATE saved_search_filters SET notifications_enabled = ?, " +
+                        "last_notified_at = CASE WHEN ? = 1 THEN datetime('now') ELSE last_notified_at END, " +
+                        "updated_at = datetime('now') WHERE telegram_id = ?")) {
+            ps.setBoolean(1, enabled);
+            ps.setBoolean(2, enabled);
+            ps.setLong(3, telegramId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ setNotificationsEnabled: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public static boolean deleteSavedSearchFilter(long telegramId) {
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(
+                "DELETE FROM saved_search_filters WHERE telegram_id = ?")) {
+            ps.setLong(1, telegramId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ deleteSavedSearchFilter: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public static void markFilterChecked(long telegramId) {
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(
+                "UPDATE saved_search_filters SET last_notified_at = datetime('now') WHERE telegram_id = ?")) {
+            ps.setLong(1, telegramId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("❌ markFilterChecked: " + e.getMessage());
+        }
+    }
+
+    /** Повертає лише оголошення, що з'явилися після останньої успішної перевірки фільтра. */
+    public static List<Announcement> getNewAnnouncementsForFilter(SavedSearchFilter filter) {
+        List<Announcement> results = new ArrayList<>();
+        if (filter.getCity() == null || filter.getCategory() == null) return results;
+        String sql = """
+            SELECT id, url, title, price_value, price_currency, location, date_published, seller, phone, description
+            FROM olx_announcements
+            WHERE city = ? AND category = ?
+              AND created_at > COALESCE(
+                    (SELECT last_notified_at FROM saved_search_filters WHERE telegram_id = ?),
+                    datetime('now', '-1 hour'))
+            ORDER BY created_at ASC
+        """;
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, filter.getCity().getLabel());
+            ps.setString(2, filter.getCategory().getLabel());
+            ps.setLong(3, filter.getTelegramId());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Announcement ad = new Announcement(rs.getString("id"), rs.getString("url"), rs.getString("title"), "",
+                            rs.getString("location"), filter.getCity(), filter.getCategory());
+                    double price = rs.getDouble("price_value");
+                    if (!rs.wasNull()) ad.setPriceValue(BigDecimal.valueOf(price));
+                    ad.setPriceCurrency(rs.getString("price_currency"));
+                    ad.setDatePublished(rs.getString("date_published"));
+                    ad.setSeller(rs.getString("seller"));
+                    ad.setPhone(rs.getString("phone"));
+                    ad.setDescription(rs.getString("description"));
+                    ad.setPhotos(getPhotosForAnnouncement(ad.getId(), conn));
+                    ad.setParams(getParamsForAnnouncement(ad.getId(), conn));
+                    if (matchesFilter(ad, filter)) results.add(ad);
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("❌ getNewAnnouncementsForFilter: " + e.getMessage());
+        }
+        return results;
+    }
+
+    /** Замінює попередню непроглянуту чергу новим набором знайдених оголошень. */
+    public static boolean saveNotificationBatch(long telegramId, List<Announcement> announcements) {
+        if (announcements == null || announcements.isEmpty()) return false;
+        String ids = announcements.stream().map(Announcement::getId).collect(java.util.stream.Collectors.joining("\n"));
+        String sql = """
+            INSERT INTO pending_notification_batches (telegram_id, announcement_ids, current_offset, created_at)
+            VALUES (?, ?, 0, datetime('now'))
+            ON CONFLICT(telegram_id) DO UPDATE SET announcement_ids=excluded.announcement_ids, current_offset=0, created_at=datetime('now')
+        """;
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, telegramId);
+            ps.setString(2, ids);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("❌ saveNotificationBatch: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public static Optional<NotificationBatch> getNotificationBatch(long telegramId) {
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(
+                "SELECT announcement_ids, current_offset FROM pending_notification_batches WHERE telegram_id = ?")) {
+            ps.setLong(1, telegramId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return Optional.empty();
+                String raw = rs.getString("announcement_ids");
+                List<String> ids = raw == null || raw.isBlank() ? List.of() : List.of(raw.split("\\R"));
+                return Optional.of(new NotificationBatch(ids, rs.getInt("current_offset")));
+            }
+        } catch (SQLException e) {
+            System.err.println("❌ getNotificationBatch: " + e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    public static void updateNotificationBatchOffset(long telegramId, int offset) {
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(
+                "UPDATE pending_notification_batches SET current_offset = ? WHERE telegram_id = ?")) {
+            ps.setInt(1, offset);
+            ps.setLong(2, telegramId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("❌ updateNotificationBatchOffset: " + e.getMessage());
+        }
+    }
+
+    public static void deleteNotificationBatch(long telegramId) {
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(
+                "DELETE FROM pending_notification_batches WHERE telegram_id = ?")) {
+            ps.setLong(1, telegramId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("❌ deleteNotificationBatch: " + e.getMessage());
+        }
+    }
+
+    /** Завантажує оголошення за збереженими ID у точно тому самому порядку. */
+    public static List<Announcement> getAnnouncementsByIds(List<String> ids) {
+        List<Announcement> results = new ArrayList<>();
+        if (ids == null || ids.isEmpty()) return results;
+        String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+        String sql = "SELECT id, city, category, url, title, price_value, price_currency, location, date_published, seller, phone, description "
+                + "FROM olx_announcements WHERE id IN (" + placeholders + ")";
+        java.util.Map<String, Announcement> byId = new java.util.HashMap<>();
+        try (Connection conn = DatabaseManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (int i = 0; i < ids.size(); i++) ps.setString(i + 1, ids.get(i));
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    City city = cityFromDatabase(rs.getString("city"));
+                    AnnouncementCategory category = categoryFromDatabase(rs.getString("category"));
+                    Announcement ad = new Announcement(rs.getString("id"), rs.getString("url"), rs.getString("title"), "",
+                            rs.getString("location"), city, category);
+                    double price = rs.getDouble("price_value");
+                    if (!rs.wasNull()) ad.setPriceValue(BigDecimal.valueOf(price));
+                    ad.setPriceCurrency(rs.getString("price_currency"));
+                    ad.setDatePublished(rs.getString("date_published"));
+                    ad.setSeller(rs.getString("seller"));
+                    ad.setPhone(rs.getString("phone"));
+                    ad.setDescription(rs.getString("description"));
+                    ad.setPhotos(getPhotosForAnnouncement(ad.getId(), conn));
+                    ad.setParams(getParamsForAnnouncement(ad.getId(), conn));
+                    byId.put(ad.getId(), ad);
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("❌ getAnnouncementsByIds: " + e.getMessage());
+        }
+        for (String id : ids) if (byId.containsKey(id)) results.add(byId.get(id));
+        return results;
+    }
+
+    private static boolean matchesFilter(Announcement ad, SavedSearchFilter filter) {
+        if (filter.getRooms() != null) {
+            int rooms = ad.getRoomsCount();
+            if (filter.isRoomsMinimum() ? rooms < filter.getRooms() : rooms != filter.getRooms()) return false;
+        }
+        if (filter.getMinPriceUsd() == null || ad.getPriceValue() == null) return true;
+        BigDecimal usd = ad.getPriceCurrency() != null && (ad.getPriceCurrency().equalsIgnoreCase("usd") || ad.getPriceCurrency().equals("$"))
+                ? ad.getPriceValue() : PrivatBankRateService.convertUahToUsd(ad.getPriceValue());
+        return usd.intValue() >= filter.getMinPriceUsd() && (filter.getMaxPriceUsd() == null || usd.intValue() <= filter.getMaxPriceUsd());
+    }
+
+    private static SavedSearchFilter readSavedFilter(ResultSet rs) throws SQLException {
+        SavedSearchFilter filter = new SavedSearchFilter();
+        filter.setTelegramId(rs.getLong("telegram_id"));
+        filter.setDealType(enumValue(DealType.class, rs.getString("deal_type")));
+        filter.setPropertyType(enumValue(PropertyType.class, rs.getString("property_type")));
+        filter.setCity(enumValue(City.class, rs.getString("city")));
+        filter.setCategory(enumValue(AnnouncementCategory.class, rs.getString("category")));
+        int rooms = rs.getInt("rooms"); filter.setRooms(rs.wasNull() ? null : rooms);
+        filter.setRoomsMinimum(rs.getBoolean("rooms_minimum"));
+        int min = rs.getInt("min_price_usd"); filter.setMinPriceUsd(rs.wasNull() ? null : min);
+        int max = rs.getInt("max_price_usd"); filter.setMaxPriceUsd(rs.wasNull() ? null : max);
+        filter.setNotificationsEnabled(rs.getBoolean("notifications_enabled"));
+        return filter;
+    }
+
+    private static <E extends Enum<E>> E enumValue(Class<E> type, String value) {
+        try { return value == null ? null : Enum.valueOf(type, value); } catch (IllegalArgumentException e) { return null; }
+    }
+
+    private static City cityFromDatabase(String value) {
+        for (City city : City.values()) if (city.getLabel().equalsIgnoreCase(value)) return city;
+        return City.CHERNIVTSI;
+    }
+
+    private static AnnouncementCategory categoryFromDatabase(String value) {
+        for (AnnouncementCategory category : AnnouncementCategory.values()) {
+            if (category.getLabel().equalsIgnoreCase(value)) return category;
+        }
+        return AnnouncementCategory.RENT_LONG;
+    }
+
+    private static void setNullableInt(PreparedStatement ps, int index, Integer value) throws SQLException {
+        if (value == null) ps.setNull(index, Types.INTEGER); else ps.setInt(index, value);
+    }
+
+    private static String nameOf(Enum<?> value) { return value == null ? null : value.name(); }
 
     // ── ПРИВАТНІ ДОПОМІЖНІ МЕТОДИ (HELPER METHODS) ───────────────────────────
 

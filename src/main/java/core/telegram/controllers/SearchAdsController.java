@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 
 /**
@@ -48,6 +49,22 @@ public class SearchAdsController implements BotController {
             long chatId = update.getCallbackQuery().getMessage().getChatId();
             int messageId = update.getCallbackQuery().getMessage().getMessageId();
             String data = update.getCallbackQuery().getData();
+
+            if (data.equals("NOTIF_VIEW")) {
+                clearMarkup(chatId, messageId);
+                sendNotificationPageAsync(chatId);
+                return;
+            }
+            if (data.equals("NOTIF_NEXT")) {
+                clearMarkup(chatId, messageId);
+                sendNotificationPageAsync(chatId);
+                return;
+            }
+            if (data.equals("NOTIF_IGNORE")) {
+                ProjectDatabaseService.deleteNotificationBatch(chatId);
+                editNotificationDecision(chatId, messageId, "✅ Гаразд, нові оголошення не надсилатиму.");
+                return;
+            }
 
             // --- Кнопки "Назад" всередині воронки пошуку ---
             switch (data) {
@@ -80,7 +97,27 @@ public class SearchAdsController implements BotController {
 
             // --- Точка входу з головного меню ---
             if (data.equals("MENU_SEARCH_ADS")) {
-                session.setState(BotState.WAITING_FOR_DEAL_TYPE);
+                resetSearchFilter(session);
+                editToDealTypeSelection(chatId, messageId);
+                return;
+            }
+
+            if (data.equals("SEARCH_USE_SAVED_FILTER")) {
+                if (applySavedFilter(chatId, session)) {
+                    clearMarkup(chatId, messageId);
+                    sendAdsBatch(chatId, session);
+                }
+                return;
+            }
+            if (data.equals("SEARCH_ENABLE_NOTIFICATIONS")) {
+                if (ProjectDatabaseService.saveSearchFilter(chatId, session)) {
+                    clearMarkup(chatId, messageId);
+                    sendInfo(chatId, "🔔 Сповіщення увімкнено. Надсилатиму нові оголошення за цим фільтром.");
+                }
+                return;
+            }
+            if (data.equals("SEARCH_RESET_FILTER")) {
+                resetSearchFilter(session);
                 editToDealTypeSelection(chatId, messageId);
                 return;
             }
@@ -121,6 +158,9 @@ public class SearchAdsController implements BotController {
         keyboard.add(InlineKeyboardFactory.createRow(new String[][]{
                 {"🛒 " + DealType.BUY.getLabel(), "DEAL_BUY"}, {"🏠 " + DealType.RENT.getLabel(), "DEAL_RENT"}
         }));
+        if (ProjectDatabaseService.getSavedSearchFilter(chatId).isPresent()) {
+            keyboard.add(InlineKeyboardFactory.createRow(new String[][]{{"▶️ Почати пошук за вашим фільтром", "SEARCH_USE_SAVED_FILTER"}}));
+        }
         keyboard.add(InlineKeyboardFactory.createRow(new String[][]{{"⬅️ Назад в меню", "BACK_TO_MENU"}}));
 
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
@@ -331,14 +371,7 @@ public class SearchAdsController implements BotController {
     private void handlerBackFiltersButton(UserSession userSession, long chatId, int messageId) throws TelegramApiException {
         clearMarkup(chatId, messageId);
 
-        userSession.setState(BotState.WAITING_FOR_DEAL_TYPE);
-        userSession.setSelectedDealType(null);
-        userSession.setSelectedPropertyType(null);
-        userSession.setSelectedCity(null);
-        userSession.setSelectedCategory(null);
-        userSession.setSelectedRooms(null);
-        userSession.setRoomsIsMinimum(false);
-        userSession.setPriceRangeUsd(null, null);
+        resetSearchFilter(userSession);
 
         editToDealTypeSelection(chatId, messageId);
     }
@@ -398,6 +431,7 @@ public class SearchAdsController implements BotController {
             emptyMsg.setText(total == 0 ? "🤷‍♂️ Об'єктів з такими параметрами не знайдено." : "🏁 Це всі оголошення за цим фільтром.");
 
             emptyMsg.setReplyMarkup(InlineKeyboardFactory.createVertical(new LinkedHashMap<>() {{
+                put("🔔 Сповіщати про нові", "SEARCH_ENABLE_NOTIFICATIONS");
                 put("🔄 Новий фільтр", "BACK_TO_FILTERS");
                 put("🚪 Вихід", "EXIT_BOT");
             }}, null, null));
@@ -457,10 +491,10 @@ public class SearchAdsController implements BotController {
             row.addAll(InlineKeyboardFactory.createRow(new String[][]{{"⏭ Наступні 3", "NEXT_3"}}));
         }
         row.addAll(InlineKeyboardFactory.createRow(new String[][]{
-                {"⬅️ Змінити фільтр", "BACK_TO_FILTERS"}, {"🚪 Вихід", "EXIT_BOT"}
+                {"🔔 Сповіщати про нові", "SEARCH_ENABLE_NOTIFICATIONS"}, {"🔄 Скинути фільтр", "SEARCH_RESET_FILTER"}
         }));
-
         controlKeyboard.add(row);
+        controlKeyboard.add(InlineKeyboardFactory.createRow(new String[][]{{"⬅️ Змінити фільтр", "BACK_TO_FILTERS"}, {"🚪 Вихід", "EXIT_BOT"}}));
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         markup.setKeyboard(controlKeyboard);
         controlMsg.setReplyMarkup(markup);
@@ -479,5 +513,121 @@ public class SearchAdsController implements BotController {
             clearMarkup.setReplyMarkup(null);
             sender.executeMethod(clearMarkup);
         } catch (Exception ignored) {}
+    }
+
+    private boolean applySavedFilter(long chatId, UserSession session) {
+        Optional<SavedSearchFilter> saved = ProjectDatabaseService.getSavedSearchFilter(chatId);
+        if (saved.isEmpty()) {
+            sendInfo(chatId, "ℹ️ Збереженого фільтра не знайдено.");
+            return false;
+        }
+        SavedSearchFilter filter = saved.get();
+        session.setSelectedDealType(filter.getDealType());
+        session.setSelectedPropertyType(filter.getPropertyType());
+        session.setSelectedCity(filter.getCity());
+        session.setSelectedCategory(filter.getCategory());
+        session.setSelectedRooms(filter.getRooms());
+        session.setRoomsIsMinimum(filter.isRoomsMinimum());
+        session.setPriceRangeUsd(filter.getMinPriceUsd(), filter.getMaxPriceUsd());
+        session.setCurrentOffset(0);
+        session.setState(BotState.SHOWING_RESULTS);
+        return true;
+    }
+
+    private void resetSearchFilter(UserSession session) {
+        session.setState(BotState.WAITING_FOR_DEAL_TYPE);
+        session.setSelectedDealType(null);
+        session.setSelectedPropertyType(null);
+        session.setSelectedCity(null);
+        session.setSelectedCategory(null);
+        session.setSelectedRooms(null);
+        session.setRoomsIsMinimum(false);
+        session.setPriceRangeUsd(null, null);
+        session.setCurrentOffset(0);
+    }
+
+    private void sendInfo(long chatId, String text) {
+        try {
+            SendMessage message = new SendMessage();
+            message.setChatId(String.valueOf(chatId));
+            message.setText(text);
+            sender.executeMethod(message);
+        } catch (Exception ignored) { }
+    }
+
+    /** Видача фонового пакета виконується поза потоком callback, бо між постами є пауза. */
+    private void sendNotificationPageAsync(long chatId) {
+        Thread worker = new Thread(() -> {
+            try { sendNotificationPage(chatId); }
+            catch (Exception ignored) { }
+        }, "Notification-Page-" + chatId);
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void sendNotificationPage(long chatId) throws Exception {
+        Optional<NotificationBatch> optional = ProjectDatabaseService.getNotificationBatch(chatId);
+        if (optional.isEmpty() || !optional.get().hasMore()) {
+            ProjectDatabaseService.deleteNotificationBatch(chatId);
+            sendInfo(chatId, "ℹ️ Нових оголошень для перегляду вже немає.");
+            return;
+        }
+
+        NotificationBatch batch = optional.get();
+        int start = batch.offset();
+        int end = Math.min(start + 3, batch.announcementIds().size());
+        List<String> pageIds = batch.announcementIds().subList(start, end);
+        List<Announcement> announcements = ProjectDatabaseService.getAnnouncementsByIds(pageIds);
+
+        for (int i = 0; i < announcements.size(); i++) {
+            if (i > 0) Thread.sleep(3_000);
+            sendAnnouncement(chatId, announcements.get(i));
+        }
+
+        ProjectDatabaseService.updateNotificationBatchOffset(chatId, end);
+        if (end < batch.announcementIds().size()) {
+            SendMessage control = new SendMessage();
+            control.setChatId(String.valueOf(chatId));
+            control.setText("📦 Показано " + end + " із " + batch.announcementIds().size() + " нових оголошень.");
+            control.setReplyMarkup(InlineKeyboardFactory.createVertical(new LinkedHashMap<>() {{
+                put("⏭ Показати наступні 3", "NOTIF_NEXT");
+            }}, null, null));
+            sender.executeMethod(control);
+        } else {
+            ProjectDatabaseService.deleteNotificationBatch(chatId);
+            sendInfo(chatId, "🏁 Це всі нові оголошення за вашим фільтром.");
+        }
+    }
+
+    private void sendAnnouncement(long chatId, Announcement ad) throws Exception {
+        SendMessage message = new SendMessage();
+        message.setChatId(String.valueOf(chatId));
+        message.setParseMode("HTML");
+        if (ad.getCategory() == AnnouncementCategory.RENT_SHORT) message.setText(AnnouncementFormatter.toHtmlDailyRental(ad));
+        else if (ad.getCategory() != null && ad.getCategory().name().startsWith("SALE")) message.setText(AnnouncementFormatter.toHtmlForSale(ad));
+        else message.setText(AnnouncementFormatter.toHtmlLongTermLease(ad));
+        sender.executeMethod(message);
+
+        if (ad.getPhotos() == null || ad.getPhotos().isEmpty()) return;
+        List<InputMedia> photos = new ArrayList<>();
+        for (int i = 0; i < Math.min(ad.getPhotos().size(), 10); i++) {
+            InputMediaPhoto photo = new InputMediaPhoto();
+            photo.setMedia(ad.getPhotos().get(i));
+            photos.add(photo);
+        }
+        SendMediaGroup group = new SendMediaGroup();
+        group.setChatId(String.valueOf(chatId));
+        group.setMedias(photos);
+        sender.executeMethod(group);
+    }
+
+    private void editNotificationDecision(long chatId, int messageId, String text) {
+        try {
+            EditMessageText edit = new EditMessageText();
+            edit.setChatId(String.valueOf(chatId));
+            edit.setMessageId(messageId);
+            edit.setText(text);
+            sender.executeMethod(edit);
+        } catch (Exception ignored) { }
     }
 }

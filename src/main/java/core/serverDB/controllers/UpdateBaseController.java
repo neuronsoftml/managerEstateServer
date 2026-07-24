@@ -4,6 +4,7 @@ import core.olx.OlxController;
 
 import core.tools.parser.olx.OlxImportService;
 import core.tools.parser.olx.OlxStorageService;
+import core.telegram.SearchNotificationService;
 
 import model.ConsoleWindow;
 import model.ProjectFolder;
@@ -167,6 +168,7 @@ public class UpdateBaseController {
                 boolean imported = OlxImportService.importFromJson(postsDir, olxOut, true);
                 if (imported) {
                     startBrokenOlxCleanupTask(olxOut);
+                    SearchNotificationService.runAfterSuccessfulImport(olxOut);
                 } else {
                     olxOut.println("⚠️ Імпорт завершився з помилками — очищення битих оголошень пропущено.");
                 }
